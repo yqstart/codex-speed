@@ -14,12 +14,15 @@ struct CodexSpeedApplication {
 
 @MainActor
 private final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let initialSettings = OrbSettings()
-    private lazy var orb = OrbPanel(settings: initialSettings) { [weak self] in self?.showSettings() }
-    private lazy var updater = ReleaseUpdater { [weak self] status in
-        self?.settingsWindow?.showUpdateStatus(status)
+    private lazy var settingsMenu: OrbSettingsMenu = OrbSettingsMenu(settings: OrbSettings()) { [weak self] settings in
+        settings.save()
+        self?.orb.apply(settings)
+        self?.updater.setEnabled(settings.automaticallyFetchUpdates)
     }
-    private var settingsWindow: OrbSettingsWindow?
+    private lazy var orb: OrbPanel = OrbPanel(settingsMenu: settingsMenu)
+    private lazy var updater: ReleaseUpdater = ReleaseUpdater { [weak self] status in
+        self?.settingsMenu.updateStatus = status
+    }
     private var monitor: SessionMonitor?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -31,7 +34,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         self.monitor = monitor
         monitor.start()
-        updater.setEnabled(initialSettings.automaticallyFetchUpdates)
+        updater.setEnabled(settingsMenu.settings.automaticallyFetchUpdates)
     }
 
     func applicationDidChangeScreenParameters(_ notification: Notification) {
@@ -43,18 +46,5 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         monitor?.stop()
         updater.setEnabled(false)
-    }
-
-    private func showSettings() {
-        let window = settingsWindow ?? OrbSettingsWindow(
-            settings: initialSettings, updateStatus: updater.status
-        ) { [weak self] value in
-            value.save()
-            self?.orb.apply(value)
-            self?.updater.setEnabled(value.automaticallyFetchUpdates)
-        }
-        settingsWindow = window
-        NSApp.activate()
-        window.makeKeyAndOrderFront(nil)
     }
 }

@@ -62,153 +62,129 @@ struct OrbSettings: Equatable {
     }
 }
 
-final class OrbSettingsWindow: NSWindow {
-    private var settings: OrbSettings
-    private var updateStatus: ReleaseUpdater.Status
+@MainActor
+final class OrbSettingsMenu: NSObject {
+    private(set) var settings: OrbSettings
+    var updateStatus: ReleaseUpdater.Status = .disabled
     private let onChange: (OrbSettings) -> Void
-    private let sizeValue = NSTextField(labelWithString: "")
-    private let updateMessage = NSTextField(labelWithString: "")
-    private let updateButton = NSButton()
 
-    init(settings: OrbSettings, updateStatus: ReleaseUpdater.Status, onChange: @escaping (OrbSettings) -> Void) {
+    init(settings: OrbSettings, onChange: @escaping (OrbSettings) -> Void) {
         self.settings = settings
-        self.updateStatus = updateStatus
         self.onChange = onChange
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 408, height: 244),
-                   styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        title = "悬浮球设置"
-        isReleasedWhenClosed = false
-        configureContent()
-        showUpdateStatus(updateStatus)
-        center()
     }
 
-    func showUpdateStatus(_ status: ReleaseUpdater.Status) {
-        updateStatus = status
-        updateMessage.stringValue = status.message
-        let title: String? = switch status {
+    func addItems(to menu: NSMenu) {
+        let size = NSMenuItem(title: "调整悬浮球大小", action: nil, keyEquivalent: "")
+        size.view = OrbSizeMenuView(size: settings.size) { [weak self] value in
+            self?.change(\.size, to: value)
+        }
+        menu.addItem(submenu("悬浮球大小", items: [size]))
+        menu.addItem(submenu("表盘样式", items: OrbSettings.Style.allCases.map { style in
+            let item = actionItem(style.title, action: #selector(selectStyle(_:)), value: style)
+            item.state = settings.style == style ? .on : .off
+            return item
+        }))
+        menu.addItem(submenu("配色", items: OrbSettings.Appearance.allCases.map { appearance in
+            let item = actionItem(appearance.title, action: #selector(selectAppearance(_:)), value: appearance)
+            item.state = settings.appearance == appearance ? .on : .off
+            return item
+        }))
+
+        menu.addItem(.separator())
+        let updates = actionItem("自动获取更新", action: #selector(toggleUpdates))
+        updates.state = settings.automaticallyFetchUpdates ? .on : .off
+        menu.addItem(updates)
+        guard settings.automaticallyFetchUpdates else { return }
+
+        let message = NSMenuItem(title: updateStatus.message, action: nil, keyEquivalent: "")
+        message.isEnabled = false
+        menu.addItem(message)
+        let title: String? = switch updateStatus {
         case .available: "查看发布页"
         case .downloaded: "在访达中显示"
         default: nil
         }
-        if let title { updateButton.title = title }
-        updateButton.isHidden = title == nil
+        if let title {
+            menu.addItem(actionItem(title, action: #selector(openUpdate(_:)), value: updateStatus))
+        }
     }
 
-    private func configureContent() {
-        sizeValue.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .medium)
-        sizeValue.textColor = .secondaryLabelColor
-        updateSizeLabel()
-        let sizeHeader = NSStackView(views: [NSTextField(labelWithString: "悬浮球大小"), sizeValue])
-        sizeHeader.alignment = .firstBaseline
-        sizeHeader.distribution = .equalSpacing
-
-        let slider = NSSlider(value: settings.size, minValue: OrbSettings.sizeRange.lowerBound,
-                              maxValue: OrbSettings.sizeRange.upperBound, target: self, action: #selector(changeSize))
-        slider.isContinuous = true
-        slider.setAccessibilityLabel("悬浮球大小")
-
-        let divider = NSBox()
-        divider.boxType = .separator
-        let styles = OrbSettings.Style.allCases
-        let style = segmentedRow("表盘样式", labels: styles.map(\.title),
-                                 selected: styles.firstIndex(of: settings.style) ?? 0, action: #selector(changeStyle))
-        let appearances = OrbSettings.Appearance.allCases
-        let appearance = segmentedRow("配色", labels: appearances.map(\.title),
-                                      selected: appearances.firstIndex(of: settings.appearance) ?? 0,
-                                      action: #selector(changeAppearance))
-
-        let updateDivider = NSBox()
-        updateDivider.boxType = .separator
-        let updates = NSSwitch()
-        updates.state = settings.automaticallyFetchUpdates ? .on : .off
-        updates.target = self
-        updates.action = #selector(changeAutomaticUpdates)
-        updates.setAccessibilityLabel("自动获取更新")
-        let updateToggle = row(NSTextField(labelWithString: "自动获取更新"), trailing: updates)
-
-        updateMessage.textColor = .secondaryLabelColor
-        updateMessage.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        updateButton.bezelStyle = .rounded
-        updateButton.controlSize = .small
-        updateButton.target = self
-        updateButton.action = #selector(openUpdate)
-        let updateDetails = row(updateMessage, trailing: updateButton)
-        updateDetails.detachesHiddenViews = false
-
-        let rows: [NSView] = [sizeHeader, slider, divider, style, appearance, updateDivider, updateToggle, updateDetails]
-        let stack = NSStackView(views: rows)
-        stack.orientation = .vertical
-        stack.alignment = .centerX
-        stack.spacing = 13
-        stack.setCustomSpacing(6, after: sizeHeader)
-        stack.setCustomSpacing(5, after: updateToggle)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-
-        let content = NSView()
-        content.addSubview(stack)
-        contentView = content
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 22),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -22),
-            stack.centerYAnchor.constraint(equalTo: content.centerYAnchor),
-            updateDetails.heightAnchor.constraint(greaterThanOrEqualToConstant: 22),
-        ] + rows.map { $0.widthAnchor.constraint(equalTo: stack.widthAnchor) })
+    private func submenu(_ title: String, items: [NSMenuItem]) -> NSMenuItem {
+        let menu = NSMenu(title: title)
+        menu.autoenablesItems = false
+        for item in items { menu.addItem(item) }
+        let parent = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        parent.submenu = menu
+        return parent
     }
 
-    private func segmentedRow(_ title: String, labels: [String], selected: Int, action: Selector) -> NSStackView {
-        let control = NSSegmentedControl(labels: labels, trackingMode: .selectOne, target: self, action: action)
-        control.segmentDistribution = .fillEqually
-        control.selectedSegment = selected
-        control.setAccessibilityLabel(title)
-        control.widthAnchor.constraint(equalToConstant: 228).isActive = true
-
-        return row(NSTextField(labelWithString: title), trailing: control)
+    private func actionItem(_ title: String, action: Selector, value: Any? = nil) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        item.representedObject = value
+        return item
     }
 
-    private func row(_ label: NSView, trailing: NSView) -> NSStackView {
-        let row = NSStackView(views: [label, trailing])
-        row.alignment = .centerY
-        row.distribution = .equalSpacing
-        return row
-    }
-
-    private func updateSizeLabel() {
-        sizeValue.stringValue = "\(Int(settings.size)) 点"
-    }
-
-    @objc private func changeSize(_ sender: NSSlider) {
-        let size = sender.doubleValue.rounded()
-        guard size != settings.size else { return }
-        settings.size = size
-        updateSizeLabel()
+    private func change<Value: Equatable>(_ keyPath: WritableKeyPath<OrbSettings, Value>, to value: Value) {
+        guard settings[keyPath: keyPath] != value else { return }
+        settings[keyPath: keyPath] = value
         onChange(settings)
     }
 
-    @objc private func changeStyle(_ sender: NSSegmentedControl) {
-        let styles = OrbSettings.Style.allCases
-        guard styles.indices.contains(sender.selectedSegment) else { return }
-        settings.style = styles[sender.selectedSegment]
-        onChange(settings)
+    @objc private func selectStyle(_ sender: NSMenuItem) {
+        guard let style = sender.representedObject as? OrbSettings.Style else { return }
+        change(\.style, to: style)
     }
 
-    @objc private func changeAppearance(_ sender: NSSegmentedControl) {
-        let appearances = OrbSettings.Appearance.allCases
-        guard appearances.indices.contains(sender.selectedSegment) else { return }
-        settings.appearance = appearances[sender.selectedSegment]
-        onChange(settings)
+    @objc private func selectAppearance(_ sender: NSMenuItem) {
+        guard let appearance = sender.representedObject as? OrbSettings.Appearance else { return }
+        change(\.appearance, to: appearance)
     }
 
-    @objc private func changeAutomaticUpdates(_ sender: NSSwitch) {
-        settings.automaticallyFetchUpdates = sender.state == .on
-        onChange(settings)
+    @objc private func toggleUpdates() {
+        change(\.automaticallyFetchUpdates, to: !settings.automaticallyFetchUpdates)
     }
 
-    @objc private func openUpdate() {
-        switch updateStatus {
+    @objc private func openUpdate(_ sender: NSMenuItem) {
+        guard let status = sender.representedObject as? ReleaseUpdater.Status else { return }
+        switch status {
         case let .available(_, page): NSWorkspace.shared.open(page)
         case let .downloaded(_, archive): NSWorkspace.shared.activateFileViewerSelecting([archive])
         default: break
         }
+    }
+}
+
+private final class OrbSizeMenuView: NSView {
+    private let currentSize = NSTextField(labelWithString: "")
+    private let onChange: (Double) -> Void
+
+    init(size: Double, onChange: @escaping (Double) -> Void) {
+        self.onChange = onChange
+        super.init(frame: CGRect(x: 0, y: 0, width: 208, height: 57))
+        autoresizingMask = .width
+        currentSize.frame = CGRect(x: 14, y: 34, width: 180, height: 16)
+        currentSize.autoresizingMask = .width
+        currentSize.alignment = .center
+        currentSize.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        currentSize.textColor = .secondaryLabelColor
+        currentSize.stringValue = "\(Int(size)) 点"
+        addSubview(currentSize)
+
+        let slider = NSSlider(value: size, minValue: OrbSettings.sizeRange.lowerBound,
+                              maxValue: OrbSettings.sizeRange.upperBound, target: self, action: #selector(slide(_:)))
+        slider.frame = CGRect(x: 14, y: 7, width: 180, height: 22)
+        slider.autoresizingMask = .width
+        slider.isContinuous = true
+        slider.setAccessibilityLabel("悬浮球大小")
+        addSubview(slider)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    @objc private func slide(_ sender: NSSlider) {
+        let size = sender.doubleValue.rounded()
+        currentSize.stringValue = "\(Int(size)) 点"
+        onChange(size)
     }
 }

@@ -6,13 +6,13 @@ final class OrbPanel: NSPanel {
     private var diameter: CGFloat
     private var extendsLeft = true
 
-    init(settings: OrbSettings, openSettings: @escaping () -> Void) {
+    init(settingsMenu: OrbSettingsMenu) {
+        let settings = settingsMenu.settings
         let size = CGFloat(settings.size)
         diameter = size
         let appearance = settings.appearance.name.flatMap(NSAppearance.init(named:))
-        orb = OrbView(geometry: OrbLayout(diameter: size),
-                      appearance: appearance ?? NSApplication.shared.effectiveAppearance,
-                      style: settings.style, openSettings: openSettings)
+        orb = OrbView(geometry: OrbLayout(diameter: size), settingsMenu: settingsMenu,
+                      appearance: appearance ?? NSApplication.shared.effectiveAppearance)
         super.init(
             contentRect: NSRect(x: 0, y: 0, width: size, height: size),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -25,6 +25,7 @@ final class OrbPanel: NSPanel {
         isOpaque = false
         hasShadow = true
         hidesOnDeactivate = false
+        allowsToolTipsWhenApplicationIsInactive = true
         animationBehavior = .none
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
         self.appearance = appearance
@@ -124,7 +125,7 @@ private final class OrbView: NSView, NSViewToolTipOwner {
     }
 
     private let dial: OrbDial
-    private let openSettings: () -> Void
+    private let settingsMenu: OrbSettingsMenu
     private var sessions: [SessionSnapshot] = []
     private var sessionOrder: [String] = []
     private var pinned: SessionSnapshot?
@@ -134,10 +135,10 @@ private final class OrbView: NSView, NSViewToolTipOwner {
     private(set) var geometry: OrbLayout
     var satelliteCount: Int { satellites.count }
 
-    init(geometry: OrbLayout, appearance: NSAppearance, style: OrbSettings.Style, openSettings: @escaping () -> Void) {
+    init(geometry: OrbLayout, settingsMenu: OrbSettingsMenu, appearance: NSAppearance) {
         self.geometry = geometry
-        dial = OrbDial(appearance: appearance, style: style)
-        self.openSettings = openSettings
+        self.settingsMenu = settingsMenu
+        dial = OrbDial(appearance: appearance, style: settingsMenu.settings.style)
         super.init(frame: .zero)
         wantsLayer = true
         layer?.addSublayer(dial.layer)
@@ -150,15 +151,10 @@ private final class OrbView: NSView, NSViewToolTipOwner {
         setAccessibilityLabel("Codex 输出速率")
         setAccessibilityValue(dial.state.accessibilityValue)
         setAccessibilityCustomActions([
-            NSAccessibilityCustomAction(name: "查看会话") { [weak self] in
+            NSAccessibilityCustomAction(name: "打开右键菜单") { [weak self] in
                 guard let self else { return false }
                 let primary = self.geometry.primary
-                return self.makeMenu().popUp(positioning: nil, at: CGPoint(x: primary.midX, y: primary.maxY), in: self)
-            },
-            NSAccessibilityCustomAction(name: "设置") { [weak self] in
-                guard let self else { return false }
-                self.openSettings()
-                return true
+                return self.contextMenu().popUp(positioning: nil, at: CGPoint(x: primary.midX, y: primary.midY), in: self)
             },
             NSAccessibilityCustomAction(name: "退出") { [weak self] in
                 guard let self else { return false }
@@ -294,17 +290,12 @@ private final class OrbView: NSView, NSViewToolTipOwner {
     func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint, userData: UnsafeMutableRawPointer?) -> String {
         if let satellite = satellite(at: point) {
             switch satellite {
-            case let .session(session): return sessionToolTip(session)
+            case let .session(session): return session.title
             case let .overflow(count): return "另有 \(count) 个会话，点击查看全部"
             }
         }
-        if let primarySession { return sessionToolTip(primarySession) }
-        return pinned.map { "\($0.title) · 待机" } ?? "待机"
-    }
-
-    private func sessionToolTip(_ session: SessionSnapshot) -> String {
-        let speed = session.reading.map { "\($0.displayValue) \(RateReading.unit)" } ?? "等待读数"
-        return [session.title, session.model, speed].compactMap { $0 }.joined(separator: " · ")
+        guard geometry.primary.contains(point) else { return "" }
+        return primarySession?.title ?? pinned?.title ?? ""
     }
 
     private func satellite(at point: CGPoint) -> Satellite? {
@@ -341,7 +332,7 @@ private final class OrbView: NSView, NSViewToolTipOwner {
         guard let pressed, let satellite = satellite(at: point), pressed.target == satellite.target else { return }
         switch satellite {
         case let .session(session): pin(session)
-        case .overflow: makeMenu().popUp(positioning: nil, at: point, in: self)
+        case .overflow: sessionMenu().popUp(positioning: nil, at: point, in: self)
         }
     }
 
@@ -350,20 +341,28 @@ private final class OrbView: NSView, NSViewToolTipOwner {
     }
 
     private func showMenu(with event: NSEvent) {
-        NSMenu.popUpContextMenu(makeMenu(), with: event, for: self)
+        contextMenu().popUp(positioning: nil, at: convert(event.locationInWindow, from: nil), in: self)
     }
 
-    private func makeMenu() -> NSMenu {
+    private func contextMenu() -> NSMenu {
         let menu = NSMenu()
-        let automatic = NSMenuItem(title: "自动显示最近活跃", action: #selector(selectAutomatic), keyEquivalent: "")
-        automatic.target = self
-        automatic.state = pinned == nil ? .on : .off
-        menu.addItem(automatic)
-        menu.addItem(.separator())
-
-        if sessions.isEmpty && pinned == nil {
-            menu.addItem(NSMenuItem(title: "暂无工作会话", action: nil, keyEquivalent: ""))
+        menu.autoenablesItems = false
+        settingsMenu.addItems(to: menu)
+        if !sessions.isEmpty || pinned != nil {
+            menu.addItem(.separator())
+            let sessions = NSMenuItem(title: "会话", action: nil, keyEquivalent: "")
+            sessions.submenu = sessionMenu()
+            menu.addItem(sessions)
         }
+        menu.addItem(.separator())
+        let quitItem = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "")
+        quitItem.target = self
+        menu.addItem(quitItem)
+        return menu
+    }
+
+    private func sessionMenu() -> NSMenu {
+        let menu = NSMenu(title: "会话")
         for session in sessions {
             menu.addItem(sessionItem(session, reading: session.reading))
         }
@@ -371,13 +370,12 @@ private final class OrbView: NSView, NSViewToolTipOwner {
             menu.addItem(sessionItem(pinned, reading: nil))
         }
 
-        menu.addItem(.separator())
-        let settingsItem = NSMenuItem(title: "设置…", action: #selector(showSettings), keyEquivalent: "")
-        settingsItem.target = self
-        menu.addItem(settingsItem)
-        let quitItem = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "")
-        quitItem.target = self
-        menu.addItem(quitItem)
+        if pinned != nil {
+            menu.addItem(.separator())
+            let clear = NSMenuItem(title: "取消固定", action: #selector(clearPin), keyEquivalent: "")
+            clear.target = self
+            menu.addItem(clear)
+        }
         return menu
     }
 
@@ -402,13 +400,9 @@ private final class OrbView: NSView, NSViewToolTipOwner {
         updateReading()
     }
 
-    @objc private func selectAutomatic() {
+    @objc private func clearPin() {
         pinned = nil
         updateReading()
-    }
-
-    @objc private func showSettings() {
-        openSettings()
     }
 
     @objc private func quit() {

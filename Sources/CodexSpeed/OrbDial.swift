@@ -41,20 +41,26 @@ final class OrbDial {
         let muted: NSColor
         let bezel: NSGradient?
         let face: NSGradient?
+        let seam: NSColor
+        let reflection: NSColor
+
+        private static func color(_ rgb: UInt32, alpha: CGFloat = 1) -> NSColor {
+            NSColor(srgbRed: CGFloat((rgb >> 16) & 0xff) / 255,
+                    green: CGFloat((rgb >> 8) & 0xff) / 255,
+                    blue: CGFloat(rgb & 0xff) / 255, alpha: alpha)
+        }
 
         static let light = Palette(
             standby: NSColor(srgbRed: 0.09, green: 0.40, blue: 0.81, alpha: 1),
             active: NSColor(srgbRed: 0.0, green: 0.48, blue: 0.40, alpha: 1),
             text: NSColor(srgbRed: 0.08, green: 0.18, blue: 0.30, alpha: 1),
             muted: NSColor(srgbRed: 0.23, green: 0.34, blue: 0.46, alpha: 1),
-            bezel: NSGradient(
-                starting: NSColor(srgbRed: 0.70, green: 0.79, blue: 0.88, alpha: 1),
-                ending: NSColor(srgbRed: 0.49, green: 0.59, blue: 0.71, alpha: 1)
-            ),
-            face: NSGradient(
-                starting: NSColor(srgbRed: 0.98, green: 0.993, blue: 1, alpha: 1),
-                ending: NSColor(srgbRed: 0.86, green: 0.91, blue: 0.965, alpha: 1)
-            )
+            bezel: NSGradient(colorsAndLocations: (color(0xf7fdff), 0), (color(0xadc4d8), 0.30),
+                              (color(0x5c7792), 0.77), (color(0x8199b0), 1)),
+            face: NSGradient(colorsAndLocations: (color(0xffffff), 0), (color(0xf1f8fd), 0.24),
+                             (color(0xd5e5f1), 0.52), (color(0xa8c2d7), 0.80), (color(0x89a7c0), 1)),
+            seam: color(0x426283, alpha: 0.41),
+            reflection: color(0xffffff, alpha: 0.94)
         )
 
         static let dark = Palette(
@@ -62,14 +68,12 @@ final class OrbDial {
             active: NSColor(srgbRed: 0.40, green: 1, blue: 0.82, alpha: 1),
             text: NSColor(srgbRed: 0.92, green: 0.97, blue: 1, alpha: 1),
             muted: NSColor(srgbRed: 0.63, green: 0.75, blue: 0.86, alpha: 1),
-            bezel: NSGradient(
-                starting: NSColor(srgbRed: 0.35, green: 0.47, blue: 0.62, alpha: 1),
-                ending: NSColor(srgbRed: 0.12, green: 0.18, blue: 0.26, alpha: 1)
-            ),
-            face: NSGradient(
-                starting: NSColor(srgbRed: 0.105, green: 0.164, blue: 0.26, alpha: 1),
-                ending: NSColor(srgbRed: 0.027, green: 0.045, blue: 0.084, alpha: 1)
-            )
+            bezel: NSGradient(colorsAndLocations: (color(0x97b2ce), 0), (color(0x506d8b), 0.26),
+                              (color(0x0e1d2d), 0.77), (color(0x344d64), 1)),
+            face: NSGradient(colorsAndLocations: (color(0x50759a), 0), (color(0x354f6d), 0.24),
+                             (color(0x192c43), 0.52), (color(0x0a1421), 0.80), (color(0x050b14), 1)),
+            seam: color(0x050c16, alpha: 0.72),
+            reflection: color(0xe0f1ff, alpha: 0.63)
         )
     }
 
@@ -315,9 +319,7 @@ final class OrbDial {
             accent.withAlphaComponent(0.85).setStroke()
             outline.stroke()
         }
-        palette.bezel?.draw(in: NSBezierPath(ovalIn: Self.faceBounds), angle: 74)
-        let face = NSBezierPath(ovalIn: Self.faceBounds.insetBy(dx: 1.15, dy: 1.15))
-        palette.face?.draw(in: face, relativeCenterPosition: NSPoint(x: -0.17, y: -0.27))
+        drawSphere(in: Self.faceBounds, rimWidth: 3.1)
         if isInstrument { drawMarkings() }
 
         if let reading = state.reading {
@@ -339,21 +341,31 @@ final class OrbDial {
     }
 
     func drawBond(from start: CGPoint, to end: CGPoint, scale: CGFloat) {
-        let bond = NSBezierPath()
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let length = hypot(dx, dy)
+        guard length > 0 else { return }
+
+        let radius = 4.1 * scale
+        let mid = CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2)
+        let offset = CGPoint(x: (dx < 0 ? dy : -dy) * radius / length, y: -abs(dx) * radius / length)
+        let bond = CGMutablePath()
         bond.move(to: start)
-        bond.line(to: end)
-        bond.lineWidth = 7 * scale
-        bond.lineCapStyle = .round
-        palette.muted.withAlphaComponent(0.9).setStroke()
-        bond.stroke()
+        bond.addLine(to: end)
+
+        context.saveGState()
+        context.addPath(bond.copy(strokingWithWidth: radius * 2, lineCap: .round, lineJoin: .round, miterLimit: 1))
+        context.clip()
+        palette.bezel?.draw(from: CGPoint(x: mid.x + offset.x, y: mid.y + offset.y),
+                            to: CGPoint(x: mid.x - offset.x, y: mid.y - offset.y),
+                            options: [.drawsBeforeStartingLocation, .drawsAfterEndingLocation])
+        context.restoreGState()
     }
 
     func drawSatellite(value: String, in rect: CGRect, subdued: Bool) {
         let palette = palette
-        let rim = rect.width / 52
-        palette.bezel?.draw(in: NSBezierPath(ovalIn: rect), angle: 74)
-        palette.face?.draw(in: NSBezierPath(ovalIn: rect.insetBy(dx: rim, dy: rim)),
-                           relativeCenterPosition: NSPoint(x: -0.17, y: -0.27))
+        drawSphere(in: rect, rimWidth: rect.width * 0.041)
 
         let fontSize = rect.width * (subdued ? 0.34 : 0.39)
         let number = NSMutableAttributedString(string: value, attributes: [
@@ -368,6 +380,26 @@ final class OrbDial {
         }
         let size = number.size()
         number.draw(at: CGPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2))
+    }
+
+    private func drawSphere(in rect: CGRect, rimWidth: CGFloat) {
+        let palette = palette
+        palette.bezel?.draw(in: NSBezierPath(ovalIn: rect), angle: 62)
+
+        let surface = rect.insetBy(dx: rimWidth, dy: rimWidth)
+        let face = NSBezierPath(ovalIn: surface)
+        palette.face?.draw(in: face, relativeCenterPosition: CGPoint(x: -0.44, y: -0.48))
+        face.lineWidth = rimWidth * 0.39
+        palette.seam.setStroke()
+        face.stroke()
+
+        let sheen = NSBezierPath()
+        sheen.appendArc(withCenter: CGPoint(x: rect.midX, y: rect.midY),
+                        radius: rect.width / 2 - rimWidth * 0.53, startAngle: 207, endAngle: 274)
+        sheen.lineWidth = rimWidth * 0.31
+        sheen.lineCapStyle = .round
+        palette.reflection.setStroke()
+        sheen.stroke()
     }
 
     private func drawMarkings() {
