@@ -24,11 +24,16 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     private lazy var orb: OrbPanel = OrbPanel(settingsMenu: settingsMenu)
     private var foregroundObservation: NSKeyValueObservation?
+    private var runningApplicationsObservation: NSKeyValueObservation?
     private var screenTracking: Timer?
     private var monitor: SessionMonitor?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        foregroundObservation = NSWorkspace.shared.observe(\.frontmostApplication, options: .initial) { [weak self] _, _ in
+        let workspace = NSWorkspace.shared
+        foregroundObservation = workspace.observe(\.frontmostApplication, options: .initial) { [weak self] _, _ in
+            Task { @MainActor [weak self] in self?.updateOrbVisibility() }
+        }
+        runningApplicationsObservation = workspace.observe(\.runningApplications) { [weak self] _, _ in
             Task { @MainActor [weak self] in self?.updateOrbVisibility() }
         }
 
@@ -41,13 +46,20 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateOrbVisibility() {
-        let foreground = NSWorkspace.shared.frontmostApplication
-        let codexIsFrontmost = foreground?.bundleIdentifier == Self.codexBundleIdentifier
         let screens = NSScreen.screens
-        updateScreenTracking(enabled: codexIsFrontmost && screens.count > 1)
+        let target: NSScreen?
+        if screens.count > 1 {
+            let processes = NSRunningApplication.runningApplications(withBundleIdentifier: Self.codexBundleIdentifier)
+            let processIDs = Set(processes.map(\.processIdentifier))
+            updateScreenTracking(enabled: !processIDs.isEmpty)
+            target = Self.screenForTopmostWindow(of: processIDs, among: screens)
+        } else {
+            updateScreenTracking(enabled: false)
+            let codexIsFrontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == Self.codexBundleIdentifier
+            target = codexIsFrontmost ? screens.first : nil
+        }
 
-        guard codexIsFrontmost, let foreground,
-              let target = Self.screenForWindow(of: foreground.processIdentifier, among: screens) else {
+        guard let target else {
             if orb.isVisible { orb.orderOut(nil) }
             return
         }
@@ -63,7 +75,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         guard screenTracking == nil else { return }
-        // 同一应用内移动窗口或切换窗口时，系统的前台应用不会变化。
+        // 各屏幕的窗口排序可独立变化，跨屏移动也可能不触发前台应用通知。
         let timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.updateOrbVisibility() }
         }
@@ -71,9 +83,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         screenTracking = timer
     }
 
-    private static func screenForWindow(of processID: pid_t, among screens: [NSScreen]) -> NSScreen? {
-        guard screens.count > 1 else { return screens.first }
-        let displays = screens.compactMap { screen -> (screen: NSScreen, bounds: CGRect)? in
+    private static func screenForTopmostWindow(of processIDs: Set<pid_t>, among screens: [NSScreen]) -> NSScreen? {
+        guard !processIDs.isEmpty else { return nil }
+        var availableDisplays = screens.compactMap { screen -> (screen: NSScreen, bounds: CGRect)? in
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
                 return nil
             }
@@ -83,19 +95,24 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             as? [[String: Any]] ?? []
         let normalLevel = CGWindowLevelForKey(.normalWindow)
         for window in windows {
-            guard (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == processID,
+            guard let processID = (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
                   (window[kCGWindowLayer as String] as? NSNumber)?.int32Value == normalLevel,
                   ((window[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0,
                   let coordinates = window[kCGWindowBounds as String] as? [String: Any],
                   let bounds = CGRect(dictionaryRepresentation: coordinates as CFDictionary) else { continue }
 
-            // 窗口可能横跨多个屏幕，选择占用面积最大的那个。
-            let intersections = displays.compactMap { display -> (screen: NSScreen, area: CGFloat)? in
-                let overlap = bounds.intersection(display.bounds)
-                guard !overlap.isEmpty else { return nil }
-                return (display.screen, overlap.width * overlap.height)
+            // 窗口由前往后排列，排除已有其他应用窗口在最前的屏幕。
+            if processIDs.contains(processID) {
+                let intersections = availableDisplays.compactMap { display -> (screen: NSScreen, area: CGFloat)? in
+                    let overlap = bounds.intersection(display.bounds)
+                    guard !overlap.isEmpty else { return nil }
+                    return (display.screen, overlap.width * overlap.height)
+                }
+                if let best = intersections.max(by: { $0.area < $1.area }) { return best.screen }
+            } else {
+                availableDisplays.removeAll { !bounds.intersection($0.bounds).isEmpty }
+                if availableDisplays.isEmpty { return nil }
             }
-            if let best = intersections.max(by: { $0.area < $1.area }) { return best.screen }
         }
         return nil
     }
@@ -110,6 +127,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         foregroundObservation?.invalidate()
+        runningApplicationsObservation?.invalidate()
         screenTracking?.invalidate()
         monitor?.stop()
         updater.stop()

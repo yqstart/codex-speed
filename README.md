@@ -1,6 +1,6 @@
 # Codex Speed
 
-独立的 macOS 悬浮球，以动态仪表显示 Codex 的生成速率（`token / s`）。悬浮球只在 Codex 桌面端位于前台时显示，并跟随当前 Codex 窗口所在的屏幕。拖动浮球可移动位置。右键可以调整设置、查看会话或退出。
+独立的 macOS 悬浮球，以动态仪表显示 Codex 的生成速率（`token / s`）。单屏时，悬浮球跟随前台 Codex 桌面端。连接多个显示器时，悬浮球显示在 Codex 窗口位于最前方的屏幕上，切换到另一块屏幕工作时也能继续看读数。拖动浮球可移动位置。右键可以调整设置、查看会话或退出。
 
 ## 打开应用
 
@@ -20,7 +20,13 @@
 
 下载完成后，选择「安装并重启」即可原地替换当前应用。新版启动失败时会恢复原应用。自动更新需要应用所在目录可写。若应用位于只读位置，请移到可写的「应用程序」文件夹后重试。
 
-供自动更新的 GitHub 正式版标签使用 `v0.2.0` 或 `0.2.0` 这类格式。上传应用压缩包时使用 `Codex-Speed-0.2.0-arm64.zip`、`Codex-Speed-0.2.0-x86_64.zip` 或 `Codex-Speed-0.2.0-universal.zip`，以便应用按当前运行架构选择。更新包使用 GitHub 提供的 SHA-256 摘要校验。
+供自动更新的 GitHub 正式版标签使用 `v0.2.0` 或 `0.2.0` 这类格式。上传应用压缩包时使用 `Codex-Speed-0.2.0-arm64.zip`、`Codex-Speed-0.2.0-x86_64.zip` 或 `Codex-Speed-0.2.0-universal.zip`，以便应用按当前运行架构选择。旧版发布包使用 GitHub 提供的 SHA-256 摘要校验。
+
+将同一版本的发布 ZIP 传给下面的命令，并将生成的 `Codex-Speed-update.json` 和 ZIP 一起上传到该版本的发布页。更新器可直接下载清单并校验安装包。
+
+```sh
+./scripts/write-update-manifest.sh dist/Codex-Speed-0.3.1-universal.zip > dist/Codex-Speed-update.json
+```
 
 ## 读数
 
