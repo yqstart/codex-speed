@@ -14,20 +14,22 @@ struct CodexSpeedApplication {
 
 @MainActor
 private final class AppDelegate: NSObject, NSApplicationDelegate {
-    private lazy var settingsMenu: OrbSettingsMenu = OrbSettingsMenu(settings: OrbSettings()) { [weak self] settings in
+    private static let codexBundleIdentifier = "com.openai.codex"
+    private let updater = ReleaseUpdater()
+    private lazy var settingsMenu: OrbSettingsMenu = OrbSettingsMenu(settings: OrbSettings(), updater: updater) { [weak self] settings in
         settings.save()
         self?.orb.apply(settings)
         self?.updater.setEnabled(settings.automaticallyFetchUpdates)
     }
     private lazy var orb: OrbPanel = OrbPanel(settingsMenu: settingsMenu)
-    private lazy var updater: ReleaseUpdater = ReleaseUpdater { [weak self] status in
-        self?.settingsMenu.updateStatus = status
-    }
+    private var foregroundObservation: NSKeyValueObservation?
     private var monitor: SessionMonitor?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         orb.placeOnScreen()
-        orb.orderFrontRegardless()
+        foregroundObservation = NSWorkspace.shared.observe(\.frontmostApplication, options: .initial) { [weak self] _, _ in
+            Task { @MainActor [weak self] in self?.updateOrbVisibility() }
+        }
 
         let monitor = SessionMonitor { [weak orb] sessions in
             orb?.show(sessions)
@@ -37,14 +39,29 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         updater.setEnabled(settingsMenu.settings.automaticallyFetchUpdates)
     }
 
+    private func updateOrbVisibility() {
+        let visible = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == Self.codexBundleIdentifier
+        guard visible != orb.isVisible else { return }
+        if visible {
+            orb.orderFrontRegardless()
+        } else {
+            orb.orderOut(nil)
+        }
+    }
+
     func applicationDidChangeScreenParameters(_ notification: Notification) {
         if !NSScreen.screens.contains(where: { $0.visibleFrame.intersects(orb.frame) }) {
             orb.placeOnScreen()
         }
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        updater.isInstalling ? .terminateCancel : .terminateNow
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
+        foregroundObservation?.invalidate()
         monitor?.stop()
-        updater.setEnabled(false)
+        updater.stop()
     }
 }

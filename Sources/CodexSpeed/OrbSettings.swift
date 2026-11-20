@@ -65,11 +65,12 @@ struct OrbSettings: Equatable {
 @MainActor
 final class OrbSettingsMenu: NSObject {
     private(set) var settings: OrbSettings
-    var updateStatus: ReleaseUpdater.Status = .disabled
+    private let updater: ReleaseUpdater
     private let onChange: (OrbSettings) -> Void
 
-    init(settings: OrbSettings, onChange: @escaping (OrbSettings) -> Void) {
+    init(settings: OrbSettings, updater: ReleaseUpdater, onChange: @escaping (OrbSettings) -> Void) {
         self.settings = settings
+        self.updater = updater
         self.onChange = onChange
     }
 
@@ -93,19 +94,30 @@ final class OrbSettingsMenu: NSObject {
         menu.addItem(.separator())
         let updates = actionItem("自动获取更新", action: #selector(toggleUpdates))
         updates.state = settings.automaticallyFetchUpdates ? .on : .off
+        updates.isEnabled = !updater.isInstalling
         menu.addItem(updates)
-        guard settings.automaticallyFetchUpdates else { return }
 
-        let message = NSMenuItem(title: updateStatus.message, action: nil, keyEquivalent: "")
-        message.isEnabled = false
-        menu.addItem(message)
-        let title: String? = switch updateStatus {
-        case .available: "查看发布页"
-        case .downloaded: "在访达中显示"
-        default: nil
+        let status = updater.status
+        let check = actionItem("检查更新", action: #selector(checkForUpdates))
+        check.isEnabled = status.canCheck
+        menu.addItem(check)
+        if let text = status.message {
+            let message = NSMenuItem(title: text, action: nil, keyEquivalent: "")
+            message.isEnabled = false
+            menu.addItem(message)
         }
-        if let title {
-            menu.addItem(actionItem(title, action: #selector(openUpdate(_:)), value: updateStatus))
+        switch status {
+        case let .ready(update, failure):
+            menu.addItem(actionItem("安装并重启", action: #selector(installUpdate(_:)), value: update))
+            if failure != nil {
+                menu.addItem(actionItem("查看发布页", action: #selector(openReleasePage(_:)), value: update.page))
+            }
+        case let .available(_, page, _):
+            menu.addItem(actionItem("查看发布页", action: #selector(openReleasePage(_:)), value: page))
+        case let .recoveryFailed(update, backup):
+            menu.addItem(actionItem("在访达中显示备份", action: #selector(revealBackup(_:)), value: backup))
+            menu.addItem(actionItem("查看发布页", action: #selector(openReleasePage(_:)), value: update.page))
+        default: break
         }
     }
 
@@ -145,13 +157,23 @@ final class OrbSettingsMenu: NSObject {
         change(\.automaticallyFetchUpdates, to: !settings.automaticallyFetchUpdates)
     }
 
-    @objc private func openUpdate(_ sender: NSMenuItem) {
-        guard let status = sender.representedObject as? ReleaseUpdater.Status else { return }
-        switch status {
-        case let .available(_, page): NSWorkspace.shared.open(page)
-        case let .downloaded(_, archive): NSWorkspace.shared.activateFileViewerSelecting([archive])
-        default: break
-        }
+    @objc private func checkForUpdates() {
+        updater.checkNow()
+    }
+
+    @objc private func installUpdate(_ sender: NSMenuItem) {
+        guard let update = sender.representedObject as? DownloadedUpdate else { return }
+        updater.install(update)
+    }
+
+    @objc private func openReleasePage(_ sender: NSMenuItem) {
+        guard let page = sender.representedObject as? URL else { return }
+        NSWorkspace.shared.open(page)
+    }
+
+    @objc private func revealBackup(_ sender: NSMenuItem) {
+        guard let backup = sender.representedObject as? URL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([backup])
     }
 }
 
