@@ -1,10 +1,12 @@
 import Foundation
 
 struct RateReading: Equatable, Sendable {
+    static let unit = "token / s"
+
     let value: Int
     let estimated: Bool
 
-    var displayValue: String { (estimated ? "≈" : "") + String(value) }
+    var displayValue: String { String(value) }
 }
 
 struct SessionReading {

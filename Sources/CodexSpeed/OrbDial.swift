@@ -15,7 +15,7 @@ final class OrbDial {
             switch self {
             case .standby: "待机"
             case .waiting: "等待读数"
-            case .measured: "词元/秒"
+            case .measured: RateReading.unit
             }
         }
 
@@ -306,8 +306,15 @@ final class OrbDial {
         }
     }
 
-    func draw() {
+    func draw(emphasized: Bool) {
         let palette = palette
+        if emphasized {
+            let outline = NSBezierPath(ovalIn: Self.faceBounds.insetBy(dx: -1.3, dy: -1.3))
+            outline.lineWidth = 1.4
+            let accent = state.reading == nil ? palette.standby : palette.active
+            accent.withAlphaComponent(0.85).setStroke()
+            outline.stroke()
+        }
         palette.bezel?.draw(in: NSBezierPath(ovalIn: Self.faceBounds), angle: 74)
         let face = NSBezierPath(ovalIn: Self.faceBounds.insetBy(dx: 1.15, dy: 1.15))
         palette.face?.draw(in: face, relativeCenterPosition: NSPoint(x: -0.17, y: -0.27))
@@ -326,9 +333,41 @@ final class OrbDial {
             .kern: state == .standby ? 1.5 : 0.55,
         ])
         let captionSize = caption.size()
-        let captionOffset: CGFloat = !isInstrument && state.reading == nil ? 10 : 17
+        let captionOffset: CGFloat = if state.reading != nil { 22 } else { isInstrument ? 17 : 10 }
         caption.draw(at: CGPoint(x: Self.center.x - captionSize.width / 2,
                                  y: Self.center.y + captionOffset - captionSize.height / 2))
+    }
+
+    func drawBond(from start: CGPoint, to end: CGPoint, scale: CGFloat) {
+        let bond = NSBezierPath()
+        bond.move(to: start)
+        bond.line(to: end)
+        bond.lineWidth = 7 * scale
+        bond.lineCapStyle = .round
+        palette.muted.withAlphaComponent(0.9).setStroke()
+        bond.stroke()
+    }
+
+    func drawSatellite(value: String, in rect: CGRect, subdued: Bool) {
+        let palette = palette
+        let rim = rect.width / 52
+        palette.bezel?.draw(in: NSBezierPath(ovalIn: rect), angle: 74)
+        palette.face?.draw(in: NSBezierPath(ovalIn: rect.insetBy(dx: rim, dy: rim)),
+                           relativeCenterPosition: NSPoint(x: -0.17, y: -0.27))
+
+        let fontSize = rect.width * (subdued ? 0.34 : 0.39)
+        let number = NSMutableAttributedString(string: value, attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: fontSize, weight: .semibold),
+            .foregroundColor: subdued ? palette.muted : palette.text,
+        ])
+        let availableWidth = rect.width * 0.83
+        let numberWidth = number.size().width
+        if numberWidth > availableWidth {
+            let font = NSFont.monospacedDigitSystemFont(ofSize: fontSize * availableWidth / numberWidth, weight: .semibold)
+            number.addAttribute(.font, value: font, range: NSRange(location: 0, length: number.length))
+        }
+        let size = number.size()
+        number.draw(at: CGPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2))
     }
 
     private func drawMarkings() {
@@ -363,19 +402,13 @@ final class OrbDial {
     }
 
     private func drawValue(_ reading: RateReading) {
-        let palette = palette
-        let mark = reading.estimated ? NSAttributedString(string: "≈", attributes: [
-            .font: NSFont.systemFont(ofSize: 14, weight: .semibold),
-            .foregroundColor: palette.active,
-        ]) : nil
-        let markWidth = mark.map { $0.size().width + 3 } ?? 0
         let baseSize: CGFloat = isInstrument ? 31 : 37
-        let number = NSMutableAttributedString(string: String(reading.value), attributes: [
+        let number = NSMutableAttributedString(string: reading.displayValue, attributes: [
             .font: NSFont.monospacedDigitSystemFont(ofSize: baseSize, weight: .semibold),
             .foregroundColor: palette.text,
             .kern: -0.65,
         ])
-        let availableWidth = (isInstrument ? 72 : 80) - markWidth
+        let availableWidth: CGFloat = isInstrument ? 72 : 80
         let numberWidth = number.size().width
         if numberWidth > availableWidth {
             let font = NSFont.monospacedDigitSystemFont(ofSize: baseSize * availableWidth / numberWidth, weight: .semibold)
@@ -383,11 +416,7 @@ final class OrbDial {
         }
 
         let measured = number.size()
-        let left = Self.center.x - (measured.width + markWidth) / 2
-        let centerY = Self.center.y - 6
-        number.draw(at: CGPoint(x: left + markWidth, y: centerY - measured.height / 2))
-        if let mark {
-            mark.draw(at: CGPoint(x: left, y: centerY - mark.size().height / 2 + 1))
-        }
+        let centerY = Self.center.y - 4
+        number.draw(at: CGPoint(x: Self.center.x - measured.width / 2, y: centerY - measured.height / 2))
     }
 }
