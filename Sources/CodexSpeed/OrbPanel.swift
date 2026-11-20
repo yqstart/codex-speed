@@ -5,6 +5,10 @@ final class OrbPanel: NSPanel {
     private let orb: OrbView
     private var diameter: CGFloat
     private var extendsLeft = true
+    private var hasPlacement = false
+    private var primaryCenter: CGPoint {
+        CGPoint(x: frame.minX + orb.geometry.primary.midX, y: frame.maxY - orb.geometry.primary.midY)
+    }
 
     init(settingsMenu: OrbSettingsMenu) {
         let settings = settingsMenu.settings
@@ -35,11 +39,17 @@ final class OrbPanel: NSPanel {
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
-    func placeOnScreen() {
-        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+    func place(on screen: NSScreen) {
         let visible = screen.visibleFrame
+        if hasPlacement, screen.frame.contains(primaryCenter) {
+            if !visible.contains(frame) {
+                reposition(around: primaryCenter, within: visible)
+            }
+            return
+        }
         reposition(around: CGPoint(x: visible.maxX - diameter / 2 - 20, y: visible.minY + diameter / 2 + 20),
                    within: visible)
+        hasPlacement = true
     }
 
     func show(_ sessions: [SessionSnapshot]) {
@@ -60,7 +70,7 @@ final class OrbPanel: NSPanel {
     }
 
     private func resizeAroundPrimary() {
-        let center = CGPoint(x: frame.minX + orb.geometry.primary.midX, y: frame.maxY - orb.geometry.primary.midY)
+        let center = primaryCenter
         let targetScreen = NSScreen.screens.first { $0.frame.contains(center) } ?? screen
         reposition(around: center, within: targetScreen?.visibleFrame)
     }
