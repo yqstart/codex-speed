@@ -39,6 +39,7 @@ struct OrbSettings: Equatable {
     var size: Double
     var style: Style
     var appearance: Appearance
+    var automaticallyFetchUpdates: Bool
 
     init(defaults: UserDefaults = .standard) {
         let values = defaults.dictionary(forKey: Self.defaultsKey) ?? [:]
@@ -48,27 +49,50 @@ struct OrbSettings: Equatable {
             : Self.defaultSize
         style = (values["style"] as? String).flatMap(Style.init(rawValue:)) ?? .instrument
         appearance = (values["appearance"] as? String).flatMap(Appearance.init(rawValue:)) ?? .system
+        automaticallyFetchUpdates = values["automaticallyFetchUpdates"] as? Bool ?? false
     }
 
     func save(to defaults: UserDefaults = .standard) {
-        defaults.set(["size": size, "style": style.rawValue, "appearance": appearance.rawValue], forKey: Self.defaultsKey)
+        defaults.set([
+            "size": size,
+            "style": style.rawValue,
+            "appearance": appearance.rawValue,
+            "automaticallyFetchUpdates": automaticallyFetchUpdates,
+        ], forKey: Self.defaultsKey)
     }
 }
 
 final class OrbSettingsWindow: NSWindow {
     private var settings: OrbSettings
+    private var updateStatus: ReleaseUpdater.Status
     private let onChange: (OrbSettings) -> Void
     private let sizeValue = NSTextField(labelWithString: "")
+    private let updateMessage = NSTextField(labelWithString: "")
+    private let updateButton = NSButton()
 
-    init(settings: OrbSettings, onChange: @escaping (OrbSettings) -> Void) {
+    init(settings: OrbSettings, updateStatus: ReleaseUpdater.Status, onChange: @escaping (OrbSettings) -> Void) {
         self.settings = settings
+        self.updateStatus = updateStatus
         self.onChange = onChange
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 408, height: 176),
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 408, height: 244),
                    styleMask: [.titled, .closable], backing: .buffered, defer: false)
         title = "悬浮球设置"
         isReleasedWhenClosed = false
         configureContent()
+        showUpdateStatus(updateStatus)
         center()
+    }
+
+    func showUpdateStatus(_ status: ReleaseUpdater.Status) {
+        updateStatus = status
+        updateMessage.stringValue = status.message
+        let title: String? = switch status {
+        case .available: "查看发布页"
+        case .downloaded: "在访达中显示"
+        default: nil
+        }
+        if let title { updateButton.title = title }
+        updateButton.isHidden = title == nil
     }
 
     private func configureContent() {
@@ -94,12 +118,31 @@ final class OrbSettingsWindow: NSWindow {
                                       selected: appearances.firstIndex(of: settings.appearance) ?? 0,
                                       action: #selector(changeAppearance))
 
-        let rows: [NSView] = [sizeHeader, slider, divider, style, appearance]
+        let updateDivider = NSBox()
+        updateDivider.boxType = .separator
+        let updates = NSSwitch()
+        updates.state = settings.automaticallyFetchUpdates ? .on : .off
+        updates.target = self
+        updates.action = #selector(changeAutomaticUpdates)
+        updates.setAccessibilityLabel("自动获取更新")
+        let updateToggle = row(NSTextField(labelWithString: "自动获取更新"), trailing: updates)
+
+        updateMessage.textColor = .secondaryLabelColor
+        updateMessage.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        updateButton.bezelStyle = .rounded
+        updateButton.controlSize = .small
+        updateButton.target = self
+        updateButton.action = #selector(openUpdate)
+        let updateDetails = row(updateMessage, trailing: updateButton)
+        updateDetails.detachesHiddenViews = false
+
+        let rows: [NSView] = [sizeHeader, slider, divider, style, appearance, updateDivider, updateToggle, updateDetails]
         let stack = NSStackView(views: rows)
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.spacing = 13
         stack.setCustomSpacing(6, after: sizeHeader)
+        stack.setCustomSpacing(5, after: updateToggle)
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         let content = NSView()
@@ -109,6 +152,7 @@ final class OrbSettingsWindow: NSWindow {
             stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 22),
             stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -22),
             stack.centerYAnchor.constraint(equalTo: content.centerYAnchor),
+            updateDetails.heightAnchor.constraint(greaterThanOrEqualToConstant: 22),
         ] + rows.map { $0.widthAnchor.constraint(equalTo: stack.widthAnchor) })
     }
 
@@ -119,7 +163,11 @@ final class OrbSettingsWindow: NSWindow {
         control.setAccessibilityLabel(title)
         control.widthAnchor.constraint(equalToConstant: 228).isActive = true
 
-        let row = NSStackView(views: [NSTextField(labelWithString: title), control])
+        return row(NSTextField(labelWithString: title), trailing: control)
+    }
+
+    private func row(_ label: NSView, trailing: NSView) -> NSStackView {
+        let row = NSStackView(views: [label, trailing])
         row.alignment = .centerY
         row.distribution = .equalSpacing
         return row
@@ -149,5 +197,18 @@ final class OrbSettingsWindow: NSWindow {
         guard appearances.indices.contains(sender.selectedSegment) else { return }
         settings.appearance = appearances[sender.selectedSegment]
         onChange(settings)
+    }
+
+    @objc private func changeAutomaticUpdates(_ sender: NSSwitch) {
+        settings.automaticallyFetchUpdates = sender.state == .on
+        onChange(settings)
+    }
+
+    @objc private func openUpdate() {
+        switch updateStatus {
+        case let .available(_, page): NSWorkspace.shared.open(page)
+        case let .downloaded(_, archive): NSWorkspace.shared.activateFileViewerSelecting([archive])
+        default: break
+        }
     }
 }

@@ -4,9 +4,9 @@
 
 ## 打开应用
 
-在 Finder 中打开生成的 `dist/Codex Speed.app`。需要 macOS 14 或更新版本及对应架构的构建产物。
+需要 macOS 14 或更新版本。下载压缩包后，解压并打开「Codex Speed」。[下载正式版](https://github.com/yqstart/codex-speed/releases/latest)
 
-有 Swift 工具链时，可以在项目目录构建。
+也可以用 Swift 工具链在项目目录构建，然后在访达中打开生成的 `dist/Codex Speed.app`。
 
 ```sh
 ./scripts/build-app.sh
@@ -15,6 +15,10 @@
 ## 悬浮球设置
 
 右键点击悬浮球并选择「设置…」，可以在 84 到 176 点之间调整窗口大小，切换「动态仪表」或「简洁读数」，并选择配色。默认跟随 macOS 当前外观，也可固定为浅色或深色。调整会立即生效并保存在本机。
+
+「自动获取更新」默认关闭。开启后，应用会立即查询 GitHub 正式版，并在以后每次启动和运行期间每隔 6 小时查询。发现兼容的新版本后会下载并校验更新包，可在设置里点「在访达中显示」并自行安装。
+
+供自动更新的 GitHub 正式版标签使用 `v0.2.0` 或 `0.2.0` 这类格式。上传应用压缩包时使用 `Codex-Speed-0.2.0-arm64.zip`、`Codex-Speed-0.2.0-x86_64.zip` 或 `Codex-Speed-0.2.0-universal.zip`，以便应用按当前运行架构选择。更新包使用 GitHub 提供的 SHA-256 摘要校验。
 
 ## 读数
 

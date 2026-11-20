@@ -16,10 +16,10 @@ struct CodexSpeedApplication {
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     private let initialSettings = OrbSettings()
     private lazy var orb = OrbPanel(settings: initialSettings) { [weak self] in self?.showSettings() }
-    private lazy var settingsWindow = OrbSettingsWindow(settings: initialSettings) { [weak self] value in
-        self?.orb.apply(value)
-        value.save()
+    private lazy var updater = ReleaseUpdater { [weak self] status in
+        self?.settingsWindow?.showUpdateStatus(status)
     }
+    private var settingsWindow: OrbSettingsWindow?
     private var monitor: SessionMonitor?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -31,6 +31,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         self.monitor = monitor
         monitor.start()
+        updater.setEnabled(initialSettings.automaticallyFetchUpdates)
     }
 
     func applicationDidChangeScreenParameters(_ notification: Notification) {
@@ -41,10 +42,18 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         monitor?.stop()
+        updater.setEnabled(false)
     }
 
     private func showSettings() {
-        let window = settingsWindow
+        let window = settingsWindow ?? OrbSettingsWindow(
+            settings: initialSettings, updateStatus: updater.status
+        ) { [weak self] value in
+            value.save()
+            self?.orb.apply(value)
+            self?.updater.setEnabled(value.automaticallyFetchUpdates)
+        }
+        settingsWindow = window
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
     }
