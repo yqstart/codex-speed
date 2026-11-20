@@ -73,7 +73,7 @@ final class OrbDial {
         )
     }
 
-    static let size: CGFloat = 116
+    static let size = CGFloat(OrbSettings.defaultSize)
     private static let bounds = CGRect(x: 0, y: 0, width: size, height: size)
     private static let center = CGPoint(x: size / 2, y: size / 2)
     private static let orbitPath = CGPath(ellipseIn: bounds.insetBy(dx: 3.6, dy: 3.6), transform: nil)
@@ -100,11 +100,15 @@ final class OrbDial {
     private let progress = CAShapeLayer()
     private var colorScheme: NSAppearance.Name
     private var palette: Palette { colorScheme == .darkAqua ? .dark : .light }
+    private var style: OrbSettings.Style
+    private var isInstrument: Bool { style == .instrument }
     private var motionEnabled = false
+    private var canAnimate: Bool { motionEnabled && isInstrument }
     private(set) var state = State.standby
 
-    init(appearance: NSAppearance) {
+    init(appearance: NSAppearance, style: OrbSettings.Style) {
         colorScheme = Self.colorScheme(for: appearance)
+        self.style = style
         layer.frame = Self.bounds
 
         let orbitMask = CAShapeLayer()
@@ -170,6 +174,18 @@ final class OrbDial {
         return true
     }
 
+    func setStyle(_ style: OrbSettings.Style) -> Bool {
+        guard self.style != style else { return false }
+        self.style = style
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        updateStateAppearance()
+        refreshMotion()
+        CATransaction.commit()
+        return true
+    }
+
     func show(_ newState: State) {
         let previous = state
         state = newState
@@ -190,8 +206,12 @@ final class OrbDial {
     func setMotionEnabled(_ enabled: Bool) {
         guard enabled != motionEnabled else { return }
         motionEnabled = enabled
+        refreshMotion()
+    }
+
+    private func refreshMotion() {
         updateAmbientMotion()
-        if !enabled {
+        if !canAnimate {
             glow.removeAnimation(forKey: "strokeEnd")
             progress.removeAnimation(forKey: "strokeEnd")
         }
@@ -210,13 +230,16 @@ final class OrbDial {
     private func updateStateAppearance() {
         let accent = state.reading == nil ? palette.standby : palette.active
         orbit.colors = [0, 0, 0.08, 0.34, 1, 0, 0].map { accent.withAlphaComponent($0).cgColor }
-        signal.isHidden = state.reading != nil
+        orbit.isHidden = !isInstrument
+        glow.isHidden = !isInstrument
+        progress.isHidden = !isInstrument
+        signal.isHidden = !isInstrument || state.reading != nil
         signal.opacity = state == .standby ? 0.82 : 1
     }
 
     private func updateAmbientMotion() {
         let rotationKey = "transform.rotation.z"
-        if motionEnabled {
+        if canAnimate {
             let rotation = CABasicAnimation(keyPath: rotationKey)
             rotation.fromValue = orbit.presentation()?.value(forKeyPath: rotationKey) ?? Self.restAngle
             rotation.byValue = 2 * CGFloat.pi
@@ -229,7 +252,7 @@ final class OrbDial {
         }
 
         let pulseKey = "transform.scale.y"
-        guard motionEnabled && state.reading == nil else {
+        guard canAnimate && state.reading == nil else {
             ripple.removeAnimation(forKey: "ripple")
             for bar in bars { bar.removeAnimation(forKey: pulseKey) }
             return
@@ -272,7 +295,7 @@ final class OrbDial {
             guard arc.strokeEnd != fraction else { continue }
             let visibleEnd = arc.presentation()?.strokeEnd ?? arc.strokeEnd
             arc.strokeEnd = fraction
-            if motionEnabled {
+            if canAnimate {
                 let glide = CABasicAnimation(keyPath: "strokeEnd")
                 glide.fromValue = visibleEnd
                 glide.toValue = fraction
@@ -288,17 +311,24 @@ final class OrbDial {
         palette.bezel?.draw(in: NSBezierPath(ovalIn: Self.faceBounds), angle: 74)
         let face = NSBezierPath(ovalIn: Self.faceBounds.insetBy(dx: 1.15, dy: 1.15))
         palette.face?.draw(in: face, relativeCenterPosition: NSPoint(x: -0.17, y: -0.27))
-        drawMarkings()
+        if isInstrument { drawMarkings() }
 
-        if let reading = state.reading { drawValue(reading) }
+        if let reading = state.reading {
+            drawValue(reading)
+        } else if !isInstrument {
+            palette.standby.withAlphaComponent(state == .standby ? 0.6 : 1).setFill()
+            let indicator = NSRect(x: Self.center.x - 7, y: Self.center.y - 9, width: 14, height: 4)
+            NSBezierPath(roundedRect: indicator, xRadius: 2, yRadius: 2).fill()
+        }
         let caption = NSAttributedString(string: state.caption, attributes: [
             .font: NSFont.systemFont(ofSize: 10, weight: .medium),
             .foregroundColor: palette.muted,
             .kern: state == .standby ? 1.5 : 0.55,
         ])
         let captionSize = caption.size()
+        let captionOffset: CGFloat = !isInstrument && state.reading == nil ? 10 : 17
         caption.draw(at: CGPoint(x: Self.center.x - captionSize.width / 2,
-                                 y: Self.center.y + 17 - captionSize.height / 2))
+                                 y: Self.center.y + captionOffset - captionSize.height / 2))
     }
 
     private func drawMarkings() {
@@ -339,13 +369,13 @@ final class OrbDial {
             .foregroundColor: palette.active,
         ]) : nil
         let markWidth = mark.map { $0.size().width + 3 } ?? 0
-        let baseSize: CGFloat = 31
+        let baseSize: CGFloat = isInstrument ? 31 : 37
         let number = NSMutableAttributedString(string: String(reading.value), attributes: [
             .font: NSFont.monospacedDigitSystemFont(ofSize: baseSize, weight: .semibold),
             .foregroundColor: palette.text,
             .kern: -0.65,
         ])
-        let availableWidth = 72 - markWidth
+        let availableWidth = (isInstrument ? 72 : 80) - markWidth
         let numberWidth = number.size().width
         if numberWidth > availableWidth {
             let font = NSFont.monospacedDigitSystemFont(ofSize: baseSize * availableWidth / numberWidth, weight: .semibold)

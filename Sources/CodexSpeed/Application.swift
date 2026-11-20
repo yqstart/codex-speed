@@ -14,7 +14,12 @@ struct CodexSpeedApplication {
 
 @MainActor
 private final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let orb = OrbPanel()
+    private let initialSettings = OrbSettings()
+    private lazy var orb = OrbPanel(settings: initialSettings) { [weak self] in self?.showSettings() }
+    private lazy var settingsWindow = OrbSettingsWindow(settings: initialSettings) { [weak self] value in
+        self?.orb.apply(value)
+        value.save()
+    }
     private var monitor: SessionMonitor?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -36,5 +41,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         monitor?.stop()
+    }
+
+    private func showSettings() {
+        let window = settingsWindow
+        NSApp.activate()
+        window.makeKeyAndOrderFront(nil)
     }
 }

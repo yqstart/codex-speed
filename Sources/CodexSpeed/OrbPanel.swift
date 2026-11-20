@@ -1,11 +1,16 @@
 import AppKit
+import QuartzCore
 
 final class OrbPanel: NSPanel {
-    private let orb = OrbView(frame: .zero)
+    private let orb: OrbView
 
-    init() {
+    init(settings: OrbSettings, openSettings: @escaping () -> Void) {
+        let size = CGFloat(settings.size)
+        let appearance = settings.appearance.name.flatMap(NSAppearance.init(named:))
+        orb = OrbView(appearance: appearance ?? NSApplication.shared.effectiveAppearance,
+                      style: settings.style, openSettings: openSettings)
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: OrbDial.size, height: OrbDial.size),
+            contentRect: NSRect(x: 0, y: 0, width: size, height: size),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -18,6 +23,7 @@ final class OrbPanel: NSPanel {
         hidesOnDeactivate = false
         animationBehavior = .none
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        self.appearance = appearance
         contentView = orb
     }
 
@@ -33,15 +39,35 @@ final class OrbPanel: NSPanel {
     func show(_ sessions: [SessionSnapshot]) {
         orb.show(sessions)
     }
+
+    func apply(_ settings: OrbSettings) {
+        if appearance?.name != settings.appearance.name {
+            appearance = settings.appearance.name.flatMap(NSAppearance.init(named:))
+        }
+        orb.setStyle(settings.style)
+
+        let size = CGFloat(settings.size)
+        guard frame.width != size else { return }
+        var resized = NSRect(x: frame.maxX - size, y: frame.minY, width: size, height: size)
+        if let visible = screen?.visibleFrame {
+            resized.origin.x = max(visible.minX, min(resized.minX, visible.maxX - size))
+            resized.origin.y = max(visible.minY, min(resized.minY, visible.maxY - size))
+        }
+        setFrame(resized, display: true)
+        invalidateShadow()
+    }
 }
 
 private final class OrbView: NSView {
-    private let dial = OrbDial(appearance: NSApplication.shared.effectiveAppearance)
+    private let dial: OrbDial
+    private let openSettings: () -> Void
     private var sessions: [SessionSnapshot] = []
     private var pinned: SessionSnapshot?
 
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
+    init(appearance: NSAppearance, style: OrbSettings.Style, openSettings: @escaping () -> Void) {
+        dial = OrbDial(appearance: appearance, style: style)
+        self.openSettings = openSettings
+        super.init(frame: .zero)
         wantsLayer = true
         layer?.addSublayer(dial.layer)
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -52,11 +78,18 @@ private final class OrbView: NSView {
         setAccessibilityRole(.staticText)
         setAccessibilityLabel("Codex 输出速率")
         setAccessibilityValue(dial.state.accessibilityValue)
-        setAccessibilityCustomActions([NSAccessibilityCustomAction(name: "退出") { [weak self] in
-            guard let self else { return false }
-            self.quit()
-            return true
-        }])
+        setAccessibilityCustomActions([
+            NSAccessibilityCustomAction(name: "设置") { [weak self] in
+                guard let self else { return false }
+                self.openSettings()
+                return true
+            },
+            NSAccessibilityCustomAction(name: "退出") { [weak self] in
+                guard let self else { return false }
+                self.quit()
+                return true
+            },
+        ])
     }
 
     required init?(coder: NSCoder) { nil }
@@ -94,6 +127,10 @@ private final class OrbView: NSView {
         updateReading()
     }
 
+    func setStyle(_ style: OrbSettings.Style) {
+        if dial.setStyle(style) { needsDisplay = true }
+    }
+
     private func updateReading() {
         let entry: SessionSnapshot?
         if let pinned {
@@ -113,8 +150,24 @@ private final class OrbView: NSView {
         setAccessibilityLabel(label)
     }
 
+    override func layout() {
+        super.layout()
+        let scale = bounds.width / OrbDial.size
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        dial.layer.position = CGPoint(x: bounds.midX, y: bounds.midY)
+        dial.layer.setAffineTransform(CGAffineTransform(scaleX: scale, y: scale))
+        CATransaction.commit()
+        needsDisplay = true
+    }
+
     override func draw(_ dirtyRect: NSRect) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        let scale = bounds.width / OrbDial.size
+        context.saveGState()
+        context.scaleBy(x: scale, y: scale)
         dial.draw()
+        context.restoreGState()
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -150,6 +203,9 @@ private final class OrbView: NSView {
         }
 
         menu.addItem(.separator())
+        let settingsItem = NSMenuItem(title: "设置…", action: #selector(showSettings), keyEquivalent: "")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
         let quitItem = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -176,6 +232,10 @@ private final class OrbView: NSView {
     @objc private func selectAutomatic() {
         pinned = nil
         updateReading()
+    }
+
+    @objc private func showSettings() {
+        openSettings()
     }
 
     @objc private func quit() {
