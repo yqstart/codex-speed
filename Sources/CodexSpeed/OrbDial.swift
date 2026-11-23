@@ -26,12 +26,27 @@ final class OrbDial {
         }
     }
 
+    struct Presentation: Equatable {
+        enum Source: String {
+            case current = "当前会话"
+            case pinned = "已固定"
+            case recent = "最近活跃"
+        }
+
+        static let standby = Presentation(session: nil, source: nil, state: .standby, parallelCount: 0)
+
+        let session: SessionSnapshot?
+        let source: Source?
+        let state: State
+        let parallelCount: Int
+    }
+
     private struct Palette {
         let face: NSColor
         let text: NSColor
         let muted: NSColor
         let track: NSColor
-        let ringColors: [NSColor]
+        let accent: NSColor
 
         private static func color(_ rgb: UInt32) -> NSColor {
             NSColor(srgbRed: CGFloat((rgb >> 16) & 0xff) / 255,
@@ -44,7 +59,7 @@ final class OrbDial {
             text: color(0x162437),
             muted: color(0x49586d),
             track: color(0xe1e7f0),
-            ringColors: [0x405fd1, 0x628013, 0x6952a5, 0x007486, 0xaf4e1c].map(color)
+            accent: color(0x405fd1)
         )
 
         static let dark = Palette(
@@ -52,62 +67,51 @@ final class OrbDial {
             text: color(0xecf2fb),
             muted: color(0xabbad0),
             track: color(0x323e50),
-            ringColors: [0x839fff, 0xb6d75e, 0xbea5fa, 0x5bc9d6, 0xffa578].map(color)
+            accent: color(0x839fff)
         )
-    }
-
-    private struct Ring {
-        let track = CAShapeLayer()
-        let progress = CAShapeLayer()
-
-        init(index: Int) {
-            let radius = OrbLayout.ringRadius(at: index)
-            let inset = OrbLayout.baseDiameter / 2 - radius
-            track.path = CGPath(ellipseIn: OrbLayout.bounds.insetBy(dx: inset, dy: inset), transform: nil)
-            let arc = CGMutablePath()
-            arc.addRelativeArc(center: OrbLayout.center, radius: radius, startAngle: -.pi / 2, delta: 2 * .pi)
-            progress.path = arc
-            progress.strokeEnd = 0
-            progress.lineCap = .round
-            for shape in [track, progress] {
-                shape.frame = OrbLayout.bounds
-                shape.fillColor = nil
-                shape.isHidden = true
-            }
-        }
     }
 
     private static let barHeights: [CGFloat] = [4, 9, 15, 9, 4]
 
     let layer = CALayer()
-    private let rings = (0..<OrbLayout.maximumRings).map(Ring.init)
+    private let track = CAShapeLayer()
+    private let progress = CAShapeLayer()
     private let signal = CALayer()
     private let ripple = CAShapeLayer()
     private let bars = barHeights.map { _ in CALayer() }
     private var colorScheme: NSAppearance.Name
     private var palette: Palette { colorScheme == .darkAqua ? .dark : .light }
-    private var selectedColor: NSColor? { selectedIndex.map { palette.ringColors[$0] } }
+    private var sessionAccent: NSColor {
+        presentation.source == .current || presentation.source == .pinned ? palette.accent : palette.muted
+    }
     private var style: OrbSettings.Style
     private var isInstrument: Bool { style == .instrument }
     private var motionEnabled = false
     private var canAnimate: Bool { motionEnabled && isInstrument }
-    private(set) var state = State.standby
-    private(set) var sessions: [SessionSnapshot] = []
-    private var selectedIndex: Int?
+    private(set) var presentation = Presentation.standby
 
     init(appearance: NSAppearance, style: OrbSettings.Style) {
         colorScheme = Self.colorScheme(for: appearance)
         self.style = style
         layer.frame = OrbLayout.bounds
-        for ring in rings {
-            layer.addSublayer(ring.track)
-            layer.addSublayer(ring.progress)
+
+        let ringInset: CGFloat = 5
+        let radius = OrbLayout.baseDiameter / 2 - ringInset
+        track.path = CGPath(ellipseIn: OrbLayout.bounds.insetBy(dx: ringInset, dy: ringInset), transform: nil)
+        let arc = CGMutablePath()
+        arc.addRelativeArc(center: OrbLayout.center, radius: radius, startAngle: -.pi / 2, delta: 2 * .pi)
+        progress.path = arc
+        progress.strokeEnd = 0
+        progress.lineCap = .round
+        for shape in [track, progress] {
+            shape.frame = OrbLayout.bounds
+            shape.fillColor = nil
+            layer.addSublayer(shape)
         }
 
-        let center = OrbLayout.center
-        let signalCenter = CGPoint(x: center.x, y: center.y - 7)
+        let signalCenter = CGPoint(x: OrbLayout.center.x, y: 59)
         signal.frame = OrbLayout.bounds
-        ripple.bounds = CGRect(x: 0, y: 0, width: 28, height: 28)
+        ripple.bounds = CGRect(x: 0, y: 0, width: 24, height: 24)
         ripple.position = signalCenter
         ripple.path = CGPath(ellipseIn: ripple.bounds.insetBy(dx: 0.5, dy: 0.5), transform: nil)
         ripple.fillColor = nil
@@ -123,6 +127,7 @@ final class OrbDial {
             signal.addSublayer(bar)
         }
         layer.addSublayer(signal)
+        updateRing(animate: false)
         updateSignalColor()
         updateSignal()
     }
@@ -139,7 +144,7 @@ final class OrbDial {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         updateSignalColor()
-        updateRings(previousSessions: sessions)
+        updateRing(animate: false)
         CATransaction.commit()
         return true
     }
@@ -147,24 +152,27 @@ final class OrbDial {
     func setStyle(_ style: OrbSettings.Style) -> Bool {
         guard self.style != style else { return false }
         self.style = style
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        updateRing(animate: false)
+        CATransaction.commit()
         refreshMotion()
         return true
     }
 
-    func show(_ newState: State, sessions: [SessionSnapshot], selectedIndex: Int?) -> Bool {
-        let selectionChanged = self.selectedIndex != selectedIndex
-        guard state != newState || self.sessions != sessions || selectionChanged else { return false }
-        let previousState = state
-        let previousSessions = self.sessions
-        state = newState
-        self.sessions = sessions
-        self.selectedIndex = selectedIndex
+    func show(_ next: Presentation) -> Bool {
+        guard presentation != next else { return false }
+        let previous = presentation
+        presentation = next
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        updateRings(previousSessions: previousSessions)
-        if selectionChanged { updateSignalColor() }
-        if previousState != newState && (previousState.reading == nil || newState.reading == nil) {
+        let continuesReading = previous.session?.id == next.session?.id
+            && previous.state.reading != nil && next.state.reading != nil
+        updateRing(animate: continuesReading && canAnimate)
+        if previous.source != next.source { updateSignalColor() }
+        if previous.state != next.state && (previous.state.reading == nil || next.state.reading == nil) {
             updateSignal()
         }
         CATransaction.commit()
@@ -181,19 +189,18 @@ final class OrbDial {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         updateSignal()
-        if !canAnimate {
-            for ring in rings { ring.progress.removeAnimation(forKey: "strokeEnd") }
-        }
+        if !canAnimate { progress.removeAnimation(forKey: "strokeEnd") }
         CATransaction.commit()
     }
 
     private func updateSignalColor() {
-        let color = (selectedColor ?? palette.ringColors[0]).cgColor
+        let color = sessionAccent.cgColor
         ripple.strokeColor = color
         for bar in bars { bar.backgroundColor = color }
     }
 
     private func updateSignal() {
+        let state = presentation.state
         signal.isHidden = !isInstrument || state.reading != nil
         signal.opacity = state == .standby ? 0.82 : 1
 
@@ -231,81 +238,80 @@ final class OrbDial {
         }
     }
 
-    private func updateRings(previousSessions: [SessionSnapshot]) {
-        let palette = palette
-        for (index, ring) in rings.enumerated() {
-            let visible = sessions.indices.contains(index)
-            ring.track.isHidden = !visible
-            ring.progress.isHidden = !visible
-            guard visible else {
-                ring.progress.removeAnimation(forKey: "strokeEnd")
-                continue
-            }
+    private func updateRing(animate: Bool) {
+        let width: CGFloat = isInstrument ? 4.3 : 2.8
+        track.lineWidth = width
+        progress.lineWidth = width
+        track.strokeColor = palette.track.cgColor
+        progress.strokeColor = sessionAccent.cgColor
+        let fraction = presentation.state.reading.map { reading in
+            let speed = CGFloat(reading.value)
+            return max(0.025, speed / (speed + 55))
+        } ?? 0
 
-            let session = sessions[index]
-            let selected = index == selectedIndex
-            let color = palette.ringColors[index]
-            let width: CGFloat = selected ? 4.3 : 3.2
-            ring.track.lineWidth = width
-            ring.progress.lineWidth = width
-            ring.track.strokeColor = (selected ? color.withAlphaComponent(0.22) : palette.track).cgColor
-            ring.progress.strokeColor = color.withAlphaComponent(session.reading == nil ? 0.65 : 1).cgColor
-            let fraction = session.reading.map { reading in
-                let speed = CGFloat(reading.value)
-                return max(0.025, speed / (speed + 55))
-            } ?? 0.001
+        if !animate { progress.removeAnimation(forKey: "strokeEnd") }
+        guard progress.strokeEnd != fraction else { return }
+        let visibleEnd = progress.presentation()?.strokeEnd ?? progress.strokeEnd
+        progress.strokeEnd = fraction
+        guard animate else { return }
 
-            let sameSession = previousSessions.indices.contains(index) && previousSessions[index].id == session.id
-            if !sameSession { ring.progress.removeAnimation(forKey: "strokeEnd") }
-            guard ring.progress.strokeEnd != fraction else { continue }
-            let visibleEnd = ring.progress.presentation()?.strokeEnd ?? ring.progress.strokeEnd
-            ring.progress.strokeEnd = fraction
-            if canAnimate && sameSession {
-                let glide = CABasicAnimation(keyPath: "strokeEnd")
-                glide.fromValue = visibleEnd
-                glide.toValue = fraction
-                glide.duration = 0.42
-                glide.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                ring.progress.add(glide, forKey: "strokeEnd")
-            }
-        }
+        let glide = CABasicAnimation(keyPath: "strokeEnd")
+        glide.fromValue = visibleEnd
+        glide.toValue = fraction
+        glide.duration = 0.42
+        glide.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        progress.add(glide, forKey: "strokeEnd")
     }
 
     func draw() {
         let palette = palette
-        let center = OrbLayout.center
         palette.face.setFill()
         NSBezierPath(ovalIn: OrbLayout.bounds.insetBy(dx: 1, dy: 1)).fill()
 
-        if let reading = state.reading {
-            drawValue(reading)
-        } else if !isInstrument {
-            let accent = selectedColor ?? palette.ringColors[0]
-            accent.withAlphaComponent(state == .standby ? 0.6 : 1).setFill()
-            let indicator = NSRect(x: center.x - 7, y: center.y - 9, width: 14, height: 4)
-            NSBezierPath(roundedRect: indicator, xRadius: 2, yRadius: 2).fill()
+        if let source = presentation.source, let title = presentation.session?.title {
+            drawLine(source.rawValue, at: 22, font: .systemFont(ofSize: 9, weight: .semibold), color: sessionAccent)
+            drawLine(title, at: 36, font: .systemFont(ofSize: 12, weight: .semibold), color: palette.text)
         }
 
-        let caption = NSAttributedString(string: state.caption, attributes: [
-            .font: NSFont.systemFont(ofSize: 10, weight: .medium),
-            .foregroundColor: palette.muted,
-            .kern: state == .standby ? 1.5 : 0.55,
+        let state = presentation.state
+        if let reading = state.reading {
+            drawValue(reading)
+            let unit = reading.estimated ? "约 \(RateReading.unit)" : RateReading.unit
+            drawLine(unit, at: 80, font: .monospacedSystemFont(ofSize: 9, weight: .medium), color: palette.muted)
+        } else {
+            let font = NSFont.systemFont(ofSize: isInstrument ? 11 : 15, weight: .medium)
+            drawLine(state.caption, at: isInstrument ? 79 : 61, font: font, color: palette.muted)
+        }
+
+        if presentation.parallelCount > 0 {
+            let badge = OrbLayout.parallelBadge
+            palette.track.setFill()
+            NSBezierPath(roundedRect: badge, xRadius: badge.height / 2, yRadius: badge.height / 2).fill()
+            drawLine("并行 \(presentation.parallelCount)", at: badge.midY, width: badge.width,
+                     font: .systemFont(ofSize: 9, weight: .medium), color: palette.muted)
+        }
+    }
+
+    private func drawLine(_ text: String, at y: CGFloat, width: CGFloat = 80, font: NSFont, color: NSColor) {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        paragraph.lineBreakMode = .byCharWrapping
+        let line = NSAttributedString(string: text, attributes: [
+            .font: font, .foregroundColor: color, .paragraphStyle: paragraph,
         ])
-        let captionSize = caption.size()
-        let captionOffset: CGFloat = if state.reading != nil { 17 } else { isInstrument ? 15 : 10 }
-        caption.draw(at: CGPoint(x: center.x - captionSize.width / 2,
-                                 y: center.y + captionOffset - captionSize.height / 2))
+        let height = ceil(line.size().height)
+        let frame = CGRect(x: OrbLayout.center.x - width / 2, y: y - height / 2, width: width, height: height)
+        line.draw(with: frame, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], context: nil)
     }
 
     private func drawValue(_ reading: RateReading) {
-        let baseSize: CGFloat = isInstrument ? 34 : 37
+        let baseSize: CGFloat = isInstrument ? 32 : 34
         let number = NSMutableAttributedString(string: reading.displayValue, attributes: [
             .font: NSFont.monospacedDigitSystemFont(ofSize: baseSize, weight: .semibold),
-            .foregroundColor: selectedColor ?? palette.text,
+            .foregroundColor: presentation.source == .recent ? palette.text : sessionAccent,
             .kern: -0.65,
         ])
-        let innerRadius = OrbLayout.ringRadius(at: max(0, sessions.count - 1))
-        let availableWidth = min(80, 2 * (innerRadius - 6))
+        let availableWidth: CGFloat = 82
         let numberWidth = number.size().width
         if numberWidth > availableWidth {
             let font = NSFont.monospacedDigitSystemFont(ofSize: baseSize * availableWidth / numberWidth, weight: .semibold)
@@ -313,7 +319,6 @@ final class OrbDial {
         }
 
         let size = number.size()
-        let center = OrbLayout.center
-        number.draw(at: CGPoint(x: center.x - size.width / 2, y: center.y - 6 - size.height / 2))
+        number.draw(at: CGPoint(x: OrbLayout.center.x - size.width / 2, y: 60 - size.height / 2))
     }
 }

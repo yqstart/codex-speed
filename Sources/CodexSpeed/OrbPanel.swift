@@ -79,15 +79,17 @@ final class OrbPanel: NSPanel {
 }
 
 private final class OrbView: NSView, NSViewToolTipOwner {
+    private struct Pin {
+        var session: SessionSnapshot
+        let focusedSessionID: String?
+    }
+
     private let dial: OrbDial
     private let settingsMenu: OrbSettingsMenu
-    private var sessions: [SessionSnapshot] = []
-    private var sessionOrder: [String] = []
-    private var focusedSession: SessionSnapshot?
-    private var pinned: SessionSnapshot?
-    private var primarySession: SessionSnapshot?
-    private var pressedRing: (id: String, event: NSEvent)?
-    private var ringTrackingArea: NSTrackingArea?
+    private var snapshot = SessionDisplayState(active: [], focused: nil)
+    private var pinned: Pin?
+    private var parallelBadgePress: NSEvent?
+    private var pointerTrackingArea: NSTrackingArea?
     private(set) var geometry: OrbLayout
 
     init(geometry: OrbLayout, settingsMenu: OrbSettingsMenu, appearance: NSAppearance) {
@@ -104,7 +106,7 @@ private final class OrbView: NSView, NSViewToolTipOwner {
         setAccessibilityElement(true)
         setAccessibilityRole(.staticText)
         setAccessibilityLabel("Codex 输出速率")
-        setAccessibilityValue(dial.state.accessibilityValue)
+        setAccessibilityValue(dial.presentation.state.accessibilityValue)
         setAccessibilityCustomActions([
             NSAccessibilityCustomAction(name: "打开右键菜单") { [weak self] in
                 guard let self else { return false }
@@ -150,13 +152,10 @@ private final class OrbView: NSView, NSViewToolTipOwner {
     }
 
     func show(_ snapshot: SessionDisplayState) {
-        sessions = snapshot.active
-        focusedSession = snapshot.focus?.session
-        let incoming = sessions.map(\.id)
-        let activeIDs = Set(incoming)
-        sessionOrder.removeAll { !activeIDs.contains($0) }
-        let existing = Set(sessionOrder)
-        sessionOrder.append(contentsOf: incoming.filter { !existing.contains($0) })
+        if let focused = snapshot.focused, let pinned, pinned.focusedSessionID != focused.id {
+            self.pinned = nil
+        }
+        self.snapshot = snapshot
         updateReading()
     }
 
@@ -171,31 +170,30 @@ private final class OrbView: NSView, NSViewToolTipOwner {
     }
 
     private func updateReading() {
-        let pinnedEntry = pinned.flatMap { selection in sessions.first { $0.id == selection.id } }
-        if let pinnedEntry { pinned = pinnedEntry }
-        let primary = pinnedEntry ?? focusedSession ?? sessions.first
-        primarySession = primary
-
-        let snapshots = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0) })
-        var visible = sessionOrder.prefix(OrbLayout.maximumRings).compactMap { snapshots[$0] }
-        if let id = primary?.id, let selected = snapshots[id], !visible.contains(where: { $0.id == id }) {
-            // 从菜单选中未显示的会话时，用最内圈展示它。
-            visible[visible.count - 1] = selected
+        let pinnedSession = pinned.flatMap { selection in snapshot.active.first { $0.id == selection.session.id } }
+        if let pinnedSession { pinned?.session = pinnedSession }
+        let primary = pinnedSession ?? snapshot.focused ?? snapshot.active.first
+        let source: OrbDial.Presentation.Source? = if pinnedSession != nil {
+            .pinned
+        } else if snapshot.focused != nil {
+            .current
+        } else if primary != nil {
+            .recent
+        } else {
+            nil
         }
 
-        let selectedIndex = visible.firstIndex { $0.id == primary?.id }
-        let state = primary?.reading.map(OrbDial.State.measured) ?? (selectedIndex == nil ? .standby : .waiting)
-        if dial.show(state, sessions: visible, selectedIndex: selectedIndex) {
-            needsDisplay = true
-        }
-        let identified = primary ?? pinned
-        let label = ["Codex 输出速率", identified?.title, identified?.model].compactMap { $0 }.joined(separator: "，")
+        let isActive = snapshot.active.contains { $0.id == primary?.id }
+        let state = primary?.reading.map(OrbDial.State.measured) ?? (isActive ? .waiting : .standby)
+        let parallelCount = snapshot.active.count - (isActive ? 1 : 0)
+        let presentation = OrbDial.Presentation(session: primary, source: source, state: state, parallelCount: parallelCount)
+        guard dial.show(presentation) else { return }
+        needsDisplay = true
+
+        let label = ["Codex 输出速率", source?.rawValue, primary?.title, primary?.model].compactMap { $0 }.joined(separator: "，")
         setAccessibilityLabel(label)
-        let otherReadings = visible.filter { $0.id != primary?.id }.map { session in
-            let value = session.reading.map(OrbDial.State.measured)?.accessibilityValue ?? "等待读数"
-            return "\(session.title)，\(value)"
-        }
-        setAccessibilityValue(([state.accessibilityValue] + otherReadings).joined(separator: "。"))
+        let parallelStatus = parallelCount > 0 ? "另有 \(parallelCount) 个并行会话" : nil
+        setAccessibilityValue([state.accessibilityValue, parallelStatus].compactMap { $0 }.joined(separator: "。"))
     }
 
     override func layout() {
@@ -220,65 +218,61 @@ private final class OrbView: NSView, NSViewToolTipOwner {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        if let ringTrackingArea { removeTrackingArea(ringTrackingArea) }
+        if let pointerTrackingArea { removeTrackingArea(pointerTrackingArea) }
         let area = NSTrackingArea(rect: .zero, options: [.inVisibleRect, .activeAlways, .mouseEnteredAndExited, .mouseMoved],
                                   owner: self, userInfo: nil)
         addTrackingArea(area)
-        ringTrackingArea = area
+        pointerTrackingArea = area
     }
 
     override func mouseEntered(with event: NSEvent) { mouseMoved(with: event) }
 
     override func mouseMoved(with event: NSEvent) {
-        let session = ringSession(at: convert(event.locationInWindow, from: nil))
-        (session == nil ? NSCursor.arrow : .pointingHand).set()
+        let point = convert(event.locationInWindow, from: nil)
+        (isParallelBadge(at: point) ? NSCursor.pointingHand : .arrow).set()
     }
 
     override func mouseExited(with event: NSEvent) { NSCursor.arrow.set() }
 
     func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint, userData: UnsafeMutableRawPointer?) -> String {
-        if let session = ringSession(at: point) {
-            let speed = session.reading.map { reading in
-                "\(reading.estimated ? "约 " : "")\(reading.displayValue) \(RateReading.unit)"
-            } ?? "等待读数"
-            return "\(session.title)\n\(speed)"
-        }
-        return primarySession?.title ?? pinned?.title ?? ""
+        if isParallelBadge(at: point) { return "查看并行会话" }
+        let presentation = dial.presentation
+        return [presentation.source?.rawValue, presentation.session?.title, presentation.state.accessibilityValue]
+            .compactMap { $0 }.joined(separator: "\n")
     }
 
-    private func ringSession(at point: CGPoint) -> SessionSnapshot? {
-        guard let index = geometry.ringIndex(at: point, count: dial.sessions.count) else { return nil }
-        return dial.sessions[index]
+    private func isParallelBadge(at point: CGPoint) -> Bool {
+        dial.presentation.parallelCount > 0 && geometry.containsParallelBadge(at: point)
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func mouseDown(with event: NSEvent) {
-        pressedRing = nil
+        parallelBadgePress = nil
         if event.modifierFlags.contains(.control) {
             showMenu(with: event)
-        } else if let session = ringSession(at: convert(event.locationInWindow, from: nil)) {
-            pressedRing = (session.id, event)
+        } else if isParallelBadge(at: convert(event.locationInWindow, from: nil)) {
+            parallelBadgePress = event
         } else {
             window?.performDrag(with: event)
         }
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard let pressed = pressedRing else { return }
-        let start = pressed.event.locationInWindow
+        guard let pressed = parallelBadgePress else { return }
+        let start = pressed.locationInWindow
         let end = event.locationInWindow
         guard hypot(end.x - start.x, end.y - start.y) >= 4 else { return }
-        pressedRing = nil
-        window?.performDrag(with: pressed.event)
+        parallelBadgePress = nil
+        window?.performDrag(with: pressed)
     }
 
     override func mouseUp(with event: NSEvent) {
-        let pressed = pressedRing
-        pressedRing = nil
+        guard parallelBadgePress != nil else { return }
+        parallelBadgePress = nil
         let point = convert(event.locationInWindow, from: nil)
-        guard let pressed, let session = ringSession(at: point), pressed.id == session.id else { return }
-        pin(session)
+        guard isParallelBadge(at: point) else { return }
+        sessionMenu().popUp(positioning: nil, at: point, in: self)
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -292,13 +286,13 @@ private final class OrbView: NSView, NSViewToolTipOwner {
     private func contextMenu() -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
-        settingsMenu.addItems(to: menu)
-        if !sessions.isEmpty || pinned != nil {
-            menu.addItem(.separator())
+        if dial.presentation.session != nil || pinned != nil {
             let sessions = NSMenuItem(title: "会话", action: nil, keyEquivalent: "")
             sessions.submenu = sessionMenu()
             menu.addItem(sessions)
+            menu.addItem(.separator())
         }
+        settingsMenu.addItems(to: menu)
         menu.addItem(.separator())
         let quitItem = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "")
         quitItem.target = self
@@ -308,11 +302,24 @@ private final class OrbView: NSView, NSViewToolTipOwner {
 
     private func sessionMenu() -> NSMenu {
         let menu = NSMenu(title: "会话")
-        for session in sessions {
-            menu.addItem(sessionItem(session, reading: session.reading))
+        menu.autoenablesItems = false
+        let focused = snapshot.focused
+        var entries = snapshot.active.filter { $0.id != focused?.id }
+        if let focused { entries.insert(focused, at: 0) }
+        if let pinned, !entries.contains(where: { $0.id == pinned.session.id }) {
+            let session = pinned.session
+            entries.append(SessionSnapshot(id: session.id, title: session.title, model: session.model, reading: nil))
         }
-        if let pinned, !sessions.contains(where: { $0.id == pinned.id }) {
-            menu.addItem(sessionItem(pinned, reading: nil))
+        let names = entries.map { session in
+            session.title.count > 28 ? "\(session.title.prefix(27))…" : session.title
+        }
+        let entriesByName = Dictionary(grouping: names, by: { $0 })
+        let activeIDs = Set(snapshot.active.map(\.id))
+        for (index, session) in entries.enumerated() {
+            if index == 1, focused != nil { menu.addItem(.separator()) }
+            let name = names[index]
+            let label = entriesByName[name, default: []].count > 1 ? "\(name)（\(session.id.suffix(6))）" : name
+            menu.addItem(sessionItem(session, name: label, isActive: activeIDs.contains(session.id)))
         }
 
         if pinned != nil {
@@ -324,24 +331,36 @@ private final class OrbView: NSView, NSViewToolTipOwner {
         return menu
     }
 
-    private func sessionItem(_ session: SessionSnapshot, reading: RateReading?) -> NSMenuItem {
-        let name = session.title.count > 24 ? "\(session.title.prefix(24))…" : session.title
-        let model = session.model ?? "模型未知"
-        let speed = reading?.displayValue ?? "—"
-        let item = NSMenuItem(title: "\(name)  ·  \(model)  ·  \(speed) \(RateReading.unit)", action: #selector(selectSession(_:)), keyEquivalent: "")
+    private func sessionItem(_ session: SessionSnapshot, name: String, isActive: Bool) -> NSMenuItem {
+        let source: OrbDial.Presentation.Source? = if session.id == snapshot.focused?.id {
+            .current
+        } else if session.id == pinned?.session.id {
+            .pinned
+        } else if session.id == dial.presentation.session?.id {
+            dial.presentation.source
+        } else {
+            nil
+        }
+        let reading = session.reading.map {
+            "\($0.estimated ? "约 " : "")\($0.displayValue) \(RateReading.unit)"
+        } ?? (isActive ? "等待读数" : "待机")
+        let title = [source?.rawValue, name, session.model, reading].compactMap { $0 }.joined(separator: "  ·  ")
+        let item = NSMenuItem(title: title, action: #selector(selectSession(_:)), keyEquivalent: "")
         item.target = self
         item.representedObject = session
-        item.state = session.id == pinned?.id ? .on : .off
+        item.isEnabled = isActive || session.id == snapshot.focused?.id
+        item.state = session.id == dial.presentation.session?.id ? .on : .off
+        item.toolTip = session.title
         return item
     }
 
     @objc private func selectSession(_ item: NSMenuItem) {
         guard let session = item.representedObject as? SessionSnapshot else { return }
-        pin(session)
-    }
-
-    private func pin(_ session: SessionSnapshot) {
-        pinned = session
+        if session.id == snapshot.focused?.id {
+            pinned = nil
+        } else if snapshot.active.contains(where: { $0.id == session.id }) {
+            pinned = Pin(session: session, focusedSessionID: snapshot.focused?.id)
+        }
         updateReading()
     }
 

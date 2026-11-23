@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex Speed · 当前会话优先</title>
+  <style>
+    :root {
+      color: #182635;
+      background: #eef1f4;
+      font: 15px/1.5 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+      font-synthesis: none;
+      --blue: #405fd1;
+      --muted: #526377;
+      --line: #dce3ed;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body { margin: 0; }
+    button { color: inherit; font: inherit; cursor: pointer; }
+    button:focus-visible, .orb:focus-visible {
+      outline: 2px solid #637eef;
+      outline-offset: 3px;
+    }
+    [hidden] { display: none !important; }
+    main {
+      width: min(100% - 48px, 1000px);
+      margin: clamp(34px, 8vw, 92px) auto 56px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      color: var(--muted);
+      font-weight: 650;
+      letter-spacing: .02em;
+    }
+    .brand-mark {
+      width: 15px;
+      height: 15px;
+      border: 2px solid #c5d0e2;
+      border-top-color: var(--blue);
+      border-right-color: var(--blue);
+      border-radius: 50%;
+      transform: rotate(24deg);
+    }
+    h1 {
+      margin: 10px 0 6px;
+      font-size: clamp(32px, 5.4vw, 52px);
+      line-height: 1.16;
+      letter-spacing: -.035em;
+    }
+    .introduction { margin: 0; color: var(--muted); }
+    .workbench {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      margin-top: 28px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: #f9fbfe;
+      box-shadow: 0 24px 64px #27384c14;
+    }
+    .sessions { padding: 23px 18px; border-right: 1px solid var(--line); }
+    .sessions h2 {
+      margin: 0 9px 12px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 650;
+    }
+    .sessions button {
+      display: flex;
+      width: 100%;
+      min-height: 55px;
+      align-items: center;
+      gap: 11px;
+      padding: 8px 10px;
+      border: 1px solid transparent;
+      border-radius: 9px;
+      text-align: left;
+      background: transparent;
+    }
+    .sessions button:hover { background: #edf1f7; }
+    .sessions button[aria-pressed="true"] {
+      border-color: #d6dff7;
+      background: #e9eefc;
+      color: #293f92;
+    }
+    .session-icon {
+      flex: 0 0 9px;
+      height: 9px;
+      border: 1.5px solid #9aabc0;
+      border-radius: 50%;
+    }
+    [aria-pressed="true"] .session-icon { border-color: var(--blue); background: var(--blue); }
+    .session-name { display: block; font-size: 14px; font-weight: 650; }
+    .session-reading {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+    .sessions .unidentified {
+      margin-top: 12px;
+      min-height: 36px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .stage {
+      --orb-face: #f9fbfe;
+      --orb-text: #162437;
+      --orb-muted: #49586d;
+      --orb-track: #e1e7f0;
+      --orb-accent: #405fd1;
+      --stage-line: #dfe6ef;
+      --stage-grid: #9eb1cc26;
+      --stage-bg: #eff3f8;
+      --stage-text: #182635;
+      --stage-muted: #526377;
+      --shadow: #26395226;
+      position: relative;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      min-height: 390px;
+      border-radius: 0 17px 17px 0;
+      color: var(--stage-text);
+      background: var(--stage-bg);
+    }
+    .stage[data-theme="dark"] {
+      --orb-face: #171e2b;
+      --orb-text: #ecf2fb;
+      --orb-muted: #abbad0;
+      --orb-track: #323e50;
+      --orb-accent: #839fff;
+      --stage-line: #3a4b61;
+      --stage-grid: #92a8ca26;
+      --stage-bg: #222e40;
+      --stage-text: #ecf2fb;
+      --stage-muted: #abbad0;
+      --shadow: #0a101b70;
+    }
+    .stage-header, .stage-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 13px 17px;
+    }
+    .stage-header { border-bottom: 1px solid var(--stage-line); }
+    .stage-footer { border-top: 1px solid var(--stage-line); }
+    .stage-label { font-size: 12px; font-weight: 650; }
+    .stage-footer p { margin: 0; color: var(--stage-muted); font-size: 11px; }
+    .choices {
+      display: flex;
+      flex: 0 0 auto;
+      gap: 2px;
+      padding: 2px;
+      border: 1px solid var(--stage-line);
+      border-radius: 7px;
+    }
+    .choices button {
+      min-width: 38px;
+      padding: 2px 7px;
+      border: 0;
+      border-radius: 5px;
+      color: var(--stage-muted);
+      background: transparent;
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+    }
+    .choices button[aria-pressed="true"] {
+      color: var(--stage-text);
+      background: var(--orb-face);
+      box-shadow: 0 1px 3px var(--shadow);
+      font-weight: 650;
+    }
+    .canvas {
+      display: grid;
+      align-items: center;
+      justify-items: center;
+      min-height: 270px;
+      background-image: radial-gradient(var(--stage-grid) 1px, transparent 1px);
+      background-size: 18px 18px;
+      background-position: center;
+    }
+    .orb-space {
+      --zoom: 1.517241;
+      position: relative;
+      display: grid;
+      place-items: center;
+      width: 176px;
+      height: 176px;
+    }
+    .orb {
+      --stroke: 0turn;
+      --source-color: var(--orb-accent);
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 116px;
+      height: 116px;
+      transform: translate(-50%, -50%) scale(var(--zoom));
+      border-radius: 50%;
+      color: var(--orb-text);
+      background: var(--orb-face);
+      box-shadow: 0 9px 24px var(--shadow), 0 1px 3px var(--shadow);
+      text-align: center;
+    }
+    .orb[data-source="recent"], .orb[data-source="none"] { --source-color: var(--orb-muted); }
+    .orb:before {
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      background: conic-gradient(var(--source-color) var(--stroke), var(--orb-track) var(--stroke));
+      mask-image: radial-gradient(circle, transparent 50.35px, #000 50.95px, #000 54.85px, transparent 55.55px);
+      content: "";
+      pointer-events: none;
+    }
+    .orb-source, .orb-name, .orb-number, .orb-unit, .orb-signal, .orb-status {
+      position: absolute;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      white-space: nowrap;
+    }
+    .orb-source { top: 22px; color: var(--source-color); font-size: 9px; font-weight: 650; }
+    .orb-name {
+      top: 36px;
+      width: 80px;
+      overflow: hidden;
+      font-size: 12px;
+      font-weight: 670;
+      text-overflow: ellipsis;
+    }
+    .orb-number {
+      top: 60px;
+      color: var(--orb-accent);
+      font-size: 32px;
+      font-weight: 650;
+      line-height: 1;
+      letter-spacing: -.65px;
+      font-variant-numeric: tabular-nums;
+    }
+    .orb[data-source="recent"] .orb-number { color: var(--orb-text); }
+    .orb-unit, .orb-status { top: 80px; color: var(--orb-muted); }
+    .orb-unit { font: 500 9px ui-monospace, "SF Mono", monospace; }
+    .orb-status { font-size: 11px; }
+    .orb-signal {
+      display: flex;
+      top: 59px;
+      gap: 2.8px;
+      align-items: center;
+      height: 24px;
+      color: var(--source-color);
+    }
+    .orb-signal i {
+      width: 2.5px;
+      height: var(--bar-height);
+      border-radius: 2px;
+      background: currentColor;
+      animation: pulse 1.15s ease-in-out infinite;
+      animation-delay: var(--bar-delay);
+    }
+    .orb[data-state="idle"] .orb-signal i { animation-duration: 2.2s; }
+    @keyframes pulse {
+      0%, 100% { transform: scaleY(.56); }
+      50% { transform: scaleY(1.12); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .orb-signal i { animation: none; }
+    }
+    .parallel {
+      position: absolute;
+      left: 35px;
+      top: 88px;
+      width: 46px;
+      height: 15px;
+      padding: 0;
+      border: 0;
+      border-radius: 20px;
+      color: var(--orb-muted);
+      background: var(--orb-track);
+      font-size: 9px;
+      font-weight: 570;
+    }
+    .parallel:hover { color: var(--orb-text); }
+    .session-menu {
+      position: absolute;
+      z-index: 1;
+      top: calc(100% + 6px);
+      left: 50%;
+      width: min(270px, calc(100vw - 64px));
+      transform: translateX(-50%);
+      padding: 6px;
+      border: 1px solid var(--stage-line);
+      border-radius: 10px;
+      background: var(--orb-face);
+      box-shadow: 0 8px 24px var(--shadow);
+    }
+    .session-menu button {
+      display: flex;
+      width: 100%;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-height: 32px;
+      padding: 4px 8px;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      text-align: left;
+      font-size: 12px;
+    }
+    .session-menu button:hover, .session-menu button:focus-visible {
+      color: var(--orb-accent);
+      background: var(--orb-track);
+    }
+    .session-menu button[aria-current="true"] { font-weight: 650; }
+    .session-menu button span:last-child {
+      color: var(--orb-muted);
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    .session-menu hr { margin: 4px 3px; border: 0; border-top: 1px solid var(--stage-line); }
+    @media (max-width: 690px) {
+      .workbench { grid-template-columns: 1fr; }
+      .sessions { border-right: 0; border-bottom: 1px solid var(--line); padding: 16px 13px; }
+      .stage { border-radius: 0 0 17px 17px; min-height: 340px; }
+      .canvas { min-height: 226px; }
+    }
+    @media (max-width: 380px) {
+      main { width: calc(100% - 28px); }
+      .stage-footer { align-items: start; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Codex Speed</div>
+      <h1>当前会话优先</h1>
+      <p class="introduction">切换示例会话，查看悬浮球的标题、速率和并行会话数。</p>
+    </header>
+
+    <div class="workbench">
+      <nav class="sessions" aria-label="示例会话">
+        <h2>示例会话</h2>
+        <div id="session-switches"></div>
+        <button class="unidentified" type="button" data-session="unknown" aria-pressed="false">模拟无法识别当前会话</button>
+      </nav>
+
+      <section class="stage" id="stage" data-theme="light" aria-label="悬浮球预览">
+        <div class="stage-header">
+          <span class="stage-label">悬浮球预览</span>
+          <div class="choices" role="group" aria-label="配色">
+            <button type="button" data-choice-theme="light" aria-pressed="true">浅色</button>
+            <button type="button" data-choice-theme="dark" aria-pressed="false">深色</button>
+          </div>
+        </div>
+
+        <div class="canvas">
+          <div class="orb-space" id="orb-space">
+            <div class="orb" id="orb" tabindex="0" aria-label="悬浮球，右键或按菜单键查看会话">
+              <div id="orb-content" aria-live="polite">
+                <span class="orb-source" id="orb-source"></span>
+                <span class="orb-name" id="orb-name"></span>
+                <span class="orb-number" id="orb-number"></span>
+                <span class="orb-unit" id="orb-unit"></span>
+                <span class="orb-signal" id="orb-signal" aria-hidden="true">
+                  <i style="--bar-height:4px;--bar-delay:0ms"></i>
+                  <i style="--bar-height:9px;--bar-delay:-120ms"></i>
+                  <i style="--bar-height:15px;--bar-delay:-240ms"></i>
+                  <i style="--bar-height:9px;--bar-delay:-360ms"></i>
+                  <i style="--bar-height:4px;--bar-delay:-480ms"></i>
+                </span>
+                <span class="orb-status" id="orb-status"></span>
+              </div>
+              <button class="parallel" id="parallel" type="button" aria-expanded="false" aria-controls="session-menu"></button>
+            </div>
+            <div class="session-menu" id="session-menu" aria-label="会话列表" hidden></div>
+          </div>
+        </div>
+
+        <div class="stage-footer">
+          <p>点按「并行」或右键查看会话</p>
+          <div class="choices" role="group" aria-label="直径（点）">
+            <button type="button" data-size="84" aria-pressed="false" aria-label="84 点">84</button>
+            <button type="button" data-size="116" aria-pressed="false" aria-label="116 点">116</button>
+            <button type="button" data-size="176" aria-pressed="true" aria-label="176 点">176</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const sessions = [
+      { id: "orb", name: "重做悬浮球", rate: 86, state: "measured" },
+      { id: "package", name: "验证安装包", rate: 42, estimated: true, state: "measured" },
+      { id: "permissions", name: "修正权限提示", state: "waiting" },
+      { id: "notes", name: "整理发布说明", state: "idle" },
+    ];
+    const active = sessions.filter(session => session.state !== "idle");
+    const sourceNames = { current: "当前会话", pinned: "已固定", recent: "最近活跃" };
+    const get = id => document.getElementById(id);
+    const switches = get("session-switches");
+    const stage = get("stage");
+    const orb = get("orb");
+    const menu = get("session-menu");
+    const parallel = get("parallel");
+    let currentID = sessions[0].id;
+    let pinnedID;
+    let menuTrigger;
+
+    function reading(session) {
+      if (session.state === "measured") {
+        return (session.estimated ? "约 " : "") + session.rate + " token / s";
+      }
+      return session.state === "waiting" ? "等待读数" : "待机";
+    }
+
+    function selection() {
+      const focused = sessions.find(session => session.id === currentID);
+      const pinned = active.find(session => session.id === pinnedID);
+      return {
+        focused,
+        primary: pinned || focused || active[0],
+        source: pinned ? "pinned" : focused ? "current" : "recent",
+      };
+    }
+
+    function render() {
+      const { primary, source } = selection();
+      const isMeasured = primary.state === "measured";
+      const count = active.filter(session => session.id !== primary.id).length;
+
+      orb.dataset.source = source;
+      orb.dataset.state = primary.state;
+      orb.style.setProperty("--stroke", isMeasured ? primary.rate / (primary.rate + 55) + "turn" : "0turn");
+      orb.title = sourceNames[source] + "，" + primary.name + "，" + reading(primary);
+      get("orb-source").textContent = sourceNames[source];
+      get("orb-name").textContent = primary.name;
+      get("orb-number").textContent = primary.rate ?? "";
+      get("orb-unit").textContent = primary.estimated ? "约 token / s" : "token / s";
+      get("orb-status").textContent = reading(primary);
+      get("orb-number").hidden = !isMeasured;
+      get("orb-unit").hidden = !isMeasured;
+      get("orb-signal").hidden = isMeasured;
+      get("orb-status").hidden = isMeasured;
+      parallel.textContent = "并行 " + count;
+      parallel.setAttribute("aria-label", "查看 " + count + " 个并行会话");
+      parallel.hidden = count === 0;
+
+      for (const button of document.querySelectorAll("[data-session]")) {
+        button.setAttribute("aria-pressed", String(button.dataset.session === currentID));
+      }
+    }
+
+    for (const session of sessions) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.session = session.id;
+      button.innerHTML = '<span class="session-icon" aria-hidden="true"></span><span><span class="session-name"></span><span class="session-reading"></span></span>';
+      button.querySelector(".session-name").textContent = session.name;
+      button.querySelector(".session-reading").textContent = reading(session);
+      switches.append(button);
+    }
+
+    function closeMenu(restoreFocus = false) {
+      menu.hidden = true;
+      parallel.setAttribute("aria-expanded", "false");
+      if (restoreFocus) menuTrigger?.focus();
+    }
+
+    function menuButton(name, detail, onClick) {
+      const button = document.createElement("button");
+      button.type = "button";
+      const label = document.createElement("span");
+      const value = document.createElement("span");
+      label.textContent = name;
+      value.textContent = detail;
+      button.append(label, value);
+      button.addEventListener("click", () => {
+        onClick();
+        closeMenu(true);
+        render();
+      });
+      return button;
+    }
+
+    function openMenu(trigger) {
+      const { focused, primary, source } = selection();
+      menu.replaceChildren();
+      const entries = active.filter(session => session.id !== focused?.id);
+      if (focused) entries.unshift(focused);
+      for (const [index, session] of entries.entries()) {
+        if (index === 1 && focused) menu.append(document.createElement("hr"));
+        const role = session.id === focused?.id ? "当前会话" : session.id === primary.id ? sourceNames[source] : "";
+        const name = role ? role + " · " + session.name : session.name;
+        const item = menuButton(name, reading(session), () => {
+          pinnedID = session.id === focused?.id ? undefined : session.id;
+        });
+        if (session.id === primary.id) item.setAttribute("aria-current", "true");
+        menu.append(item);
+      }
+      if (pinnedID) {
+        menu.append(document.createElement("hr"), menuButton("取消固定", "", () => { pinnedID = undefined; }));
+      }
+      menuTrigger = trigger;
+      menu.hidden = false;
+      parallel.setAttribute("aria-expanded", "true");
+      menu.querySelector("button")?.focus({ preventScroll: true });
+    }
+
+    document.querySelectorAll("[data-session]").forEach(button => {
+      button.addEventListener("click", () => {
+        if (button.dataset.session !== "unknown" && button.dataset.session !== currentID) pinnedID = undefined;
+        currentID = button.dataset.session;
+        closeMenu();
+        render();
+      });
+    });
+    document.querySelectorAll("[data-choice-theme]").forEach(button => {
+      button.addEventListener("click", () => {
+        stage.dataset.theme = button.dataset.choiceTheme;
+        document.querySelectorAll("[data-choice-theme]").forEach(choice => {
+          choice.setAttribute("aria-pressed", String(choice === button));
+        });
+      });
+    });
+    document.querySelectorAll("[data-size]").forEach(button => {
+      button.addEventListener("click", () => {
+        const size = Number(button.dataset.size);
+        const space = get("orb-space");
+        space.style.setProperty("--zoom", size / 116);
+        space.style.width = space.style.height = size + "px";
+        document.querySelectorAll("[data-size]").forEach(choice => {
+          choice.setAttribute("aria-pressed", String(choice === button));
+        });
+      });
+    });
+    parallel.addEventListener("click", () => {
+      if (menu.hidden) openMenu(parallel);
+      else closeMenu(true);
+    });
+    orb.addEventListener("contextmenu", event => {
+      event.preventDefault();
+      openMenu(orb);
+    });
+    orb.addEventListener("keydown", event => {
+      if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+        event.preventDefault();
+        openMenu(orb);
+      }
+    });
+    document.addEventListener("pointerdown", event => {
+      if (!orb.contains(event.target) && !menu.contains(event.target)) closeMenu();
+    });
+    document.addEventListener("keydown", event => {
+      if (event.key === "Escape" && !menu.hidden) closeMenu(true);
+    });
+
+    render();
+  </script>
+</body>
+</html>

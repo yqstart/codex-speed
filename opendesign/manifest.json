@@ -1,0 +1,25 @@
+{
+  "generated": "2026-11-23T07:05:22+00:00",
+  "sections": [
+    {
+      "id": "mockups",
+      "label": "Mockups",
+      "groups": [
+        {
+          "slug": "current-session",
+          "files": [
+            {
+              "label": "orb.html",
+              "path": "mockups/current-session/orb.html"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "design-systems",
+      "label": "Design Systems",
+      "groups": []
+    }
+  ]
+}

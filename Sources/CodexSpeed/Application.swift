@@ -15,19 +15,9 @@ struct CodexSpeedApplication {
 
 @MainActor
 private final class AppDelegate: NSObject, NSApplicationDelegate {
-    private struct WindowTarget {
-        let window: SessionWindow
-        let screen: NSScreen
-    }
-
     private static let codexBundleIdentifier = "com.openai.codex"
     private let updater = ReleaseUpdater()
-    private lazy var settingsMenu: OrbSettingsMenu = OrbSettingsMenu(
-        settings: OrbSettings(), updater: updater, requestWindowTitleAccess: { [weak self] in
-            _ = CGRequestScreenCaptureAccess()
-            self?.updateOrbVisibility()
-        }
-    ) { [weak self] settings in
+    private lazy var settingsMenu = OrbSettingsMenu(settings: OrbSettings(), updater: updater) { [weak self] settings in
         settings.save()
         self?.orb.apply(settings)
         self?.updater.setEnabled(settings.automaticallyFetchUpdates)
@@ -37,28 +27,19 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var runningApplicationsObservation: NSKeyValueObservation?
     private var screenTracking: Timer?
     private var monitor: SessionMonitor?
-    private var windowTargets: [WindowTarget] = []
-    private var fallbackScreen: NSScreen?
-    private var focusedWindowID: CGWindowID?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let workspace = NSWorkspace.shared
-        foregroundObservation = workspace.observe(\.frontmostApplication, options: .initial) { [weak self] _, _ in
+        foregroundObservation = workspace.observe(\.frontmostApplication) { [weak self] _, _ in
             Task { @MainActor [weak self] in self?.updateOrbVisibility() }
         }
         runningApplicationsObservation = workspace.observe(\.runningApplications) { [weak self] _, _ in
             Task { @MainActor [weak self] in self?.updateOrbVisibility() }
         }
 
-        let monitor = SessionMonitor { [weak self] snapshot in
-            guard let self else { return }
-            self.orb.show(snapshot)
-            let windowID = snapshot.focus?.windowID
-            guard self.focusedWindowID != windowID else { return }
-            self.focusedWindowID = windowID
-            self.placeOrb()
-        }
+        let monitor = SessionMonitor { [weak self] snapshot in self?.orb.show(snapshot) }
         self.monitor = monitor
+        updateOrbVisibility()
         monitor.start()
         updater.setEnabled(settingsMenu.settings.automaticallyFetchUpdates)
     }
@@ -66,35 +47,31 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateOrbVisibility() {
         let screens = NSScreen.screens
         let canReadTitle = CGPreflightScreenCaptureAccess()
+        let target: (screen: NSScreen, title: String?)?
         if screens.count > 1 {
             let processes = NSRunningApplication.runningApplications(withBundleIdentifier: Self.codexBundleIdentifier)
             let processIDs = Set(processes.map(\.processIdentifier))
-            windowTargets = Self.topmostWindows(of: processIDs, among: screens, readTitles: canReadTitle)
-            fallbackScreen = windowTargets.first?.screen
-            updateScreenTracking(interval: processIDs.isEmpty ? nil : (canReadTitle && !windowTargets.isEmpty ? 0.25 : 1))
+            target = Self.topmostWindow(of: processIDs, among: screens, readTitle: canReadTitle)
+            updateScreenTracking(interval: processIDs.isEmpty ? nil : (canReadTitle && target != nil ? 0.25 : 1))
         } else if let screen = screens.first, let foreground = NSWorkspace.shared.frontmostApplication,
                   foreground.bundleIdentifier == Self.codexBundleIdentifier {
             updateScreenTracking(interval: canReadTitle ? 0.25 : nil)
-            windowTargets = canReadTitle ? Self.topmostWindows(of: [foreground.processIdentifier], among: screens, readTitles: true) : []
-            fallbackScreen = screen
+            let title = canReadTitle
+                ? Self.topmostWindow(of: [foreground.processIdentifier], among: screens, readTitle: true)?.title
+                : nil
+            target = (screen, title)
         } else {
             updateScreenTracking(interval: nil)
-            windowTargets = []
-            fallbackScreen = nil
+            target = nil
         }
 
-        monitor?.focus(windows: canReadTitle ? windowTargets.map(\.window) : [])
-        placeOrb()
-    }
-
-    private func placeOrb() {
-        let focusedScreen = windowTargets.first { $0.window.id == focusedWindowID }?.screen
-        guard let screen = focusedScreen ?? fallbackScreen else {
+        monitor?.focus(windowTitle: target?.title)
+        guard let target else {
             if orb.isVisible { orb.orderOut(nil) }
             return
         }
 
-        orb.place(on: screen)
+        orb.place(on: target.screen)
         if !orb.isVisible { orb.orderFrontRegardless() }
     }
 
@@ -111,9 +88,9 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         screenTracking = timer
     }
 
-    private static func topmostWindows(of processIDs: Set<pid_t>, among screens: [NSScreen],
-                                       readTitles: Bool) -> [WindowTarget] {
-        guard !processIDs.isEmpty else { return [] }
+    private static func topmostWindow(of processIDs: Set<pid_t>, among screens: [NSScreen],
+                                       readTitle: Bool) -> (screen: NSScreen, title: String?)? {
+        guard !processIDs.isEmpty else { return nil }
         var availableDisplays = screens.compactMap { screen -> (screen: NSScreen, bounds: CGRect)? in
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
                 return nil
@@ -124,7 +101,6 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
             as? [[String: Any]] ?? []
         let normalLevel = CGWindowLevelForKey(.normalWindow)
         let ownProcessID = ProcessInfo.processInfo.processIdentifier
-        var targets: [WindowTarget] = []
         for window in windows {
             guard let processID = (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
                   processID != ownProcessID,
@@ -140,17 +116,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                     guard !overlap.isEmpty else { return nil }
                     return (display.screen, overlap.width * overlap.height)
                 }
-                guard let best = intersections.max(by: { $0.area < $1.area }),
-                      let number = window[kCGWindowNumber as String] as? NSNumber else { continue }
-                let title = readTitles ? window[kCGWindowName as String] as? String : nil
-                targets.append(WindowTarget(window: SessionWindow(id: number.uint32Value, title: title), screen: best.screen))
-                if !readTitles { break }
+                guard let best = intersections.max(by: { $0.area < $1.area }) else { continue }
+                let title = readTitle ? window[kCGWindowName as String] as? String : nil
+                return (best.screen, title)
             } else {
                 availableDisplays.removeAll { !bounds.intersection($0.bounds).isEmpty }
                 if availableDisplays.isEmpty { break }
             }
         }
-        return targets
+        return nil
     }
 
     func applicationDidChangeScreenParameters(_ notification: Notification) {
