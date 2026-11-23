@@ -1,4 +1,10 @@
+import CoreGraphics
 import Foundation
+
+struct SessionWindow: Equatable, Sendable {
+    let id: CGWindowID
+    let title: String?
+}
 
 struct SessionSnapshot: Equatable, Sendable {
     let id: String
@@ -8,8 +14,13 @@ struct SessionSnapshot: Equatable, Sendable {
 }
 
 struct SessionDisplayState: Equatable, Sendable {
+    struct Focus: Equatable, Sendable {
+        let windowID: CGWindowID
+        let session: SessionSnapshot
+    }
+
     let active: [SessionSnapshot]
-    let focused: SessionSnapshot?
+    let focus: Focus?
 }
 
 final class SessionMonitor {
@@ -21,8 +32,8 @@ final class SessionMonitor {
     private var timer: DispatchSourceTimer?
     private var sessions: [URL: SessionTail] = [:]
     private var nextScan = Date.distantPast
-    private var focusedWindowTitle: String?
-    private var lastSnapshot = SessionDisplayState(active: [], focused: nil)
+    private var windows: [SessionWindow] = []
+    private var lastSnapshot = SessionDisplayState(active: [], focus: nil)
 
     init(report: @escaping @MainActor (SessionDisplayState) -> Void) {
         self.report = report
@@ -46,11 +57,10 @@ final class SessionMonitor {
         timer = nil
     }
 
-    func focus(windowTitle: String?) {
-        let title = windowTitle.flatMap(SessionTitleIndex.normalize)
+    func focus(windows: [SessionWindow]) {
         queue.async { [weak self] in
-            guard let self, self.focusedWindowTitle != title else { return }
-            self.focusedWindowTitle = title
+            guard let self, self.windows != windows else { return }
+            self.windows = windows
             self.titleIndex.refresh()
             self.publish(self.lastSnapshot.active)
         }
@@ -64,18 +74,24 @@ final class SessionMonitor {
         }
         titleIndex.refresh()
 
+        let previousByID = Dictionary(uniqueKeysWithValues: lastSnapshot.active.map { ($0.id, $0) })
         var candidates: [(activity: SessionReading, snapshot: SessionSnapshot)] = []
         for (url, session) in sessions {
             session.readFile(url, decoder: decoder)
             guard let activity = session.rate.reading(at: now) else { continue }
             let knownID = session.rate.id
+            let id = knownID ?? url.path
+            let model = session.rate.model
             let title = knownID.flatMap { titleIndex.titles[$0] }
             let suffix = (knownID ?? url.deletingPathExtension().lastPathComponent).suffix(6)
+            let previous = previousByID[id]
+            // 活跃会话在工具执行或等待模型续写时，可能暂时没有新读数。
+            let previousReading = previous?.model == model ? previous?.reading : nil
             let snapshot = SessionSnapshot(
-                id: knownID ?? url.path,
+                id: id,
                 title: title ?? "会话 \(suffix)",
-                model: session.rate.model,
-                reading: activity.reading
+                model: model,
+                reading: activity.reading ?? previousReading
             )
             candidates.append((activity, snapshot))
         }
@@ -90,14 +106,32 @@ final class SessionMonitor {
     }
 
     private func publish(_ active: [SessionSnapshot]) {
-        let focused = focusedWindowTitle.flatMap { title -> SessionSnapshot? in
-            guard let id = titleIndex.sessionID(matching: title) else { return nil }
-            return active.first { $0.id == id } ?? SessionSnapshot(id: id, title: title, model: nil, reading: nil)
-        }
-        let snapshot = SessionDisplayState(active: active, focused: focused)
+        let snapshot = SessionDisplayState(active: active, focus: focusedSession(in: active))
         guard snapshot != lastSnapshot else { return }
         lastSnapshot = snapshot
         DispatchQueue.main.async { [report] in report(snapshot) }
+    }
+
+    private func focusedSession(in active: [SessionSnapshot]) -> SessionDisplayState.Focus? {
+        for window in windows {
+            let id: String
+            let title: String
+            if let name = window.title.flatMap(SessionTitleIndex.normalize) {
+                // 辅助窗口也属于 Codex，继续查找能匹配会话的窗口。
+                guard let matchedID = titleIndex.sessionID(matching: name) else { continue }
+                id = matchedID
+                title = name
+            } else if let previous = lastSnapshot.focus, previous.windowID == window.id {
+                // 同一个窗口短暂无标题时，保留已识别的会话。
+                id = previous.session.id
+                title = previous.session.title
+            } else {
+                continue
+            }
+            let session = active.first { $0.id == id } ?? SessionSnapshot(id: id, title: title, model: nil, reading: nil)
+            return SessionDisplayState.Focus(windowID: window.id, session: session)
+        }
+        return nil
     }
 
     private func discoverSessions(at now: Date) {

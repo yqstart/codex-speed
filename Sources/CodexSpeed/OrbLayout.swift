@@ -1,44 +1,27 @@
-import AppKit
+import CoreGraphics
 
-@MainActor
 struct OrbLayout: Equatable {
-    private static let offsets: [[CGPoint]] = [
-        [],
-        [CGPoint(x: 80, y: -16)],
-        [CGPoint(x: 74, y: -33), CGPoint(x: 78, y: 33)],
-        [CGPoint(x: 74, y: -33), CGPoint(x: 78, y: 33), CGPoint(x: 129, y: -14)],
-    ]
-    static var maximumSatellites: Int { offsets.count - 1 }
+    static let maximumRings = 5
+    static let baseDiameter = CGFloat(OrbSettings.defaultSize)
+    static let bounds = CGRect(x: 0, y: 0, width: baseDiameter, height: baseDiameter)
+    static let center = CGPoint(x: bounds.midX, y: bounds.midY)
+    private static let ringSpacing: CGFloat = 5
 
-    let scale: CGFloat
-    let size: CGSize
-    let primary: CGRect
-    let satellites: [CGRect]
+    let diameter: CGFloat
+    var scale: CGFloat { diameter / Self.baseDiameter }
 
-    init(diameter: CGFloat, satelliteCount: Int = 0, extendsLeft: Bool = true) {
-        let scale = diameter / OrbDial.size
-        let primary = CGRect(x: -diameter / 2, y: -diameter / 2, width: diameter, height: diameter)
-        let radius = 26 * scale
-        let direction: CGFloat = extendsLeft ? -1 : 1
-        let satellites = Self.offsets[satelliteCount].map { offset in
-            CGRect(x: direction * offset.x * scale - radius, y: offset.y * scale - radius,
-                   width: radius * 2, height: radius * 2)
-        }
-        let padding = 6 * scale
-        let footprint = satellites.reduce(primary) { $0.union($1.insetBy(dx: -padding, dy: -padding)) }
-        self.scale = scale
-        size = footprint.size
-        self.primary = primary.offsetBy(dx: -footprint.minX, dy: -footprint.minY)
-        self.satellites = satellites.map { $0.offsetBy(dx: -footprint.minX, dy: -footprint.minY) }
+    static func ringRadius(at index: Int) -> CGFloat {
+        baseDiameter / 2 - 5 - CGFloat(index) * ringSpacing
     }
 
     func frame(centeredOn point: CGPoint) -> CGRect {
-        CGRect(origin: CGPoint(x: point.x - primary.midX, y: point.y + primary.midY - size.height), size: size)
+        CGRect(x: point.x - diameter / 2, y: point.y - diameter / 2, width: diameter, height: diameter)
     }
 
-    func satelliteIndex(at point: CGPoint) -> Int? {
-        satellites.firstIndex { rect in
-            hypot(point.x - rect.midX, point.y - rect.midY) <= rect.width / 2
+    func ringIndex(at point: CGPoint, count: Int) -> Int? {
+        let distance = hypot(point.x - diameter / 2, point.y - diameter / 2) / scale
+        return (0..<count).first { index in
+            abs(distance - Self.ringRadius(at: index)) <= Self.ringSpacing / 2
         }
     }
 }
