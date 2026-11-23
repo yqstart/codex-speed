@@ -17,7 +17,12 @@ struct CodexSpeedApplication {
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let codexBundleIdentifier = "com.openai.codex"
     private let updater = ReleaseUpdater()
-    private lazy var settingsMenu: OrbSettingsMenu = OrbSettingsMenu(settings: OrbSettings(), updater: updater) { [weak self] settings in
+    private lazy var settingsMenu: OrbSettingsMenu = OrbSettingsMenu(
+        settings: OrbSettings(), updater: updater, requestWindowTitleAccess: { [weak self] in
+            _ = CGRequestScreenCaptureAccess()
+            self?.updateOrbVisibility()
+        }
+    ) { [weak self] settings in
         settings.save()
         self?.orb.apply(settings)
         self?.updater.setEnabled(settings.automaticallyFetchUpdates)
@@ -47,43 +52,48 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateOrbVisibility() {
         let screens = NSScreen.screens
-        let target: NSScreen?
+        let canReadTitle = CGPreflightScreenCaptureAccess()
+        let target: (screen: NSScreen, title: String?)?
         if screens.count > 1 {
             let processes = NSRunningApplication.runningApplications(withBundleIdentifier: Self.codexBundleIdentifier)
             let processIDs = Set(processes.map(\.processIdentifier))
-            updateScreenTracking(enabled: !processIDs.isEmpty)
-            target = Self.screenForTopmostWindow(of: processIDs, among: screens)
+            target = Self.topmostWindow(of: processIDs, among: screens, readTitle: canReadTitle)
+            updateScreenTracking(interval: processIDs.isEmpty ? nil : (canReadTitle && target != nil ? 0.25 : 1))
+        } else if let screen = screens.first, let foreground = NSWorkspace.shared.frontmostApplication,
+                  foreground.bundleIdentifier == Self.codexBundleIdentifier {
+            updateScreenTracking(interval: canReadTitle ? 0.25 : nil)
+            let window = canReadTitle ? Self.topmostWindow(of: [foreground.processIdentifier], among: screens, readTitle: true) : nil
+            target = (screen, window?.title)
         } else {
-            updateScreenTracking(enabled: false)
-            let codexIsFrontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == Self.codexBundleIdentifier
-            target = codexIsFrontmost ? screens.first : nil
+            updateScreenTracking(interval: nil)
+            target = nil
         }
 
+        monitor?.focus(windowTitle: target?.title)
         guard let target else {
             if orb.isVisible { orb.orderOut(nil) }
             return
         }
 
-        orb.place(on: target)
+        orb.place(on: target.screen)
         if !orb.isVisible { orb.orderFrontRegardless() }
     }
 
-    private func updateScreenTracking(enabled: Bool) {
-        guard enabled else {
-            screenTracking?.invalidate()
-            screenTracking = nil
-            return
-        }
-        guard screenTracking == nil else { return }
-        // 各屏幕的窗口排序可独立变化，跨屏移动也可能不触发前台应用通知。
-        let timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+    private func updateScreenTracking(interval: TimeInterval?) {
+        guard screenTracking?.timeInterval != interval else { return }
+        screenTracking?.invalidate()
+        screenTracking = nil
+        guard let interval else { return }
+        // 切换对话会改变窗口标题，应用的前台状态可能保持不变。
+        let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.updateOrbVisibility() }
         }
-        timer.tolerance = 0.2
+        timer.tolerance = interval * 0.2
         screenTracking = timer
     }
 
-    private static func screenForTopmostWindow(of processIDs: Set<pid_t>, among screens: [NSScreen]) -> NSScreen? {
+    private static func topmostWindow(of processIDs: Set<pid_t>, among screens: [NSScreen],
+                                      readTitle: Bool) -> (screen: NSScreen, title: String?)? {
         guard !processIDs.isEmpty else { return nil }
         var availableDisplays = screens.compactMap { screen -> (screen: NSScreen, bounds: CGRect)? in
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
@@ -108,7 +118,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
                     guard !overlap.isEmpty else { return nil }
                     return (display.screen, overlap.width * overlap.height)
                 }
-                if let best = intersections.max(by: { $0.area < $1.area }) { return best.screen }
+                if let best = intersections.max(by: { $0.area < $1.area }) {
+                    let title = readTitle ? window[kCGWindowName as String] as? String : nil
+                    return (best.screen, title)
+                }
             } else {
                 availableDisplays.removeAll { !bounds.intersection($0.bounds).isEmpty }
                 if availableDisplays.isEmpty { return nil }

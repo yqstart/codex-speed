@@ -52,8 +52,8 @@ final class OrbPanel: NSPanel {
         hasPlacement = true
     }
 
-    func show(_ sessions: [SessionSnapshot]) {
-        orb.show(sessions)
+    func show(_ snapshot: SessionDisplayState) {
+        orb.show(snapshot)
         if orb.satelliteCount != orb.geometry.satellites.count { resizeAroundPrimary() }
     }
 
@@ -138,6 +138,7 @@ private final class OrbView: NSView, NSViewToolTipOwner {
     private let settingsMenu: OrbSettingsMenu
     private var sessions: [SessionSnapshot] = []
     private var sessionOrder: [String] = []
+    private var focusedSession: SessionSnapshot?
     private var pinned: SessionSnapshot?
     private var primarySession: SessionSnapshot?
     private var satellites: [Satellite] = []
@@ -204,8 +205,9 @@ private final class OrbView: NSView, NSViewToolTipOwner {
         dial.setMotionEnabled(visible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
     }
 
-    func show(_ sessions: [SessionSnapshot]) {
-        self.sessions = sessions
+    func show(_ snapshot: SessionDisplayState) {
+        sessions = snapshot.active
+        focusedSession = snapshot.focused
         let incoming = sessions.map(\.id)
         let activeIDs = Set(incoming)
         sessionOrder.removeAll { !activeIDs.contains($0) }
@@ -227,7 +229,8 @@ private final class OrbView: NSView, NSViewToolTipOwner {
     private func updateReading() {
         let pinnedEntry = pinned.flatMap { selection in sessions.first { $0.id == selection.id } }
         if let pinnedEntry { pinned = pinnedEntry }
-        let primary = pinnedEntry ?? sessions.first
+        let primary = pinnedEntry ?? focusedSession ?? sessions.first
+        let primaryChanged = primarySession?.id != primary?.id
         if let primary, let previous = primarySession, previous.id != primary.id,
            let oldIndex = sessionOrder.firstIndex(of: previous.id),
            let newIndex = sessionOrder.firstIndex(of: primary.id) {
@@ -235,6 +238,7 @@ private final class OrbView: NSView, NSViewToolTipOwner {
             sessionOrder.swapAt(oldIndex, newIndex)
         }
         primarySession = primary
+        if primaryChanged { refreshToolTips() }
 
         let others = sessionOrder.filter { $0 != primary?.id }
         let capacity = OrbLayout.maximumSatellites
@@ -247,7 +251,8 @@ private final class OrbView: NSView, NSViewToolTipOwner {
             needsDisplay = true
         }
 
-        let state = primary?.reading.map(OrbDial.State.measured) ?? (primary == nil ? .standby : .waiting)
+        let hasActivity = primary.map { sessionOrder.contains($0.id) } ?? false
+        let state = primary?.reading.map(OrbDial.State.measured) ?? (hasActivity ? .waiting : .standby)
         if state != dial.state {
             dial.show(state)
             needsDisplay = true

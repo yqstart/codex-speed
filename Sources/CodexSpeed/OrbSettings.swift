@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 
 struct OrbSettings: Equatable {
     enum Style: String, CaseIterable {
@@ -66,11 +67,14 @@ struct OrbSettings: Equatable {
 final class OrbSettingsMenu: NSObject {
     private(set) var settings: OrbSettings
     private let updater: ReleaseUpdater
+    private let requestWindowTitleAccess: () -> Void
     private let onChange: (OrbSettings) -> Void
 
-    init(settings: OrbSettings, updater: ReleaseUpdater, onChange: @escaping (OrbSettings) -> Void) {
+    init(settings: OrbSettings, updater: ReleaseUpdater, requestWindowTitleAccess: @escaping () -> Void,
+         onChange: @escaping (OrbSettings) -> Void) {
         self.settings = settings
         self.updater = updater
+        self.requestWindowTitleAccess = requestWindowTitleAccess
         self.onChange = onChange
     }
 
@@ -90,6 +94,11 @@ final class OrbSettingsMenu: NSObject {
             item.state = settings.appearance == appearance ? .on : .off
             return item
         }))
+        if !CGPreflightScreenCaptureAccess() {
+            let follow = actionItem("启用跟随当前对话…", action: #selector(enableConversationFollowing))
+            follow.toolTip = "macOS 使用屏幕录制权限提供窗口标题"
+            menu.addItem(follow)
+        }
 
         menu.addItem(.separator())
         let updates = actionItem("自动获取更新", action: #selector(toggleUpdates))
@@ -155,6 +164,10 @@ final class OrbSettingsMenu: NSObject {
 
     @objc private func toggleUpdates() {
         change(\.automaticallyFetchUpdates, to: !settings.automaticallyFetchUpdates)
+    }
+
+    @objc private func enableConversationFollowing() {
+        requestWindowTitleAccess()
     }
 
     @objc private func checkForUpdates() {

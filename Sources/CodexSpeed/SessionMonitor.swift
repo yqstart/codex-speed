@@ -7,18 +7,24 @@ struct SessionSnapshot: Equatable, Sendable {
     let reading: RateReading?
 }
 
+struct SessionDisplayState: Equatable, Sendable {
+    let active: [SessionSnapshot]
+    let focused: SessionSnapshot?
+}
+
 final class SessionMonitor {
     private let queue = DispatchQueue(label: "local.codex-speed.sessions", qos: .utility)
-    private let report: @MainActor ([SessionSnapshot]) -> Void
+    private let report: @MainActor (SessionDisplayState) -> Void
     private let decoder = LogRecordDecoder()
     private let root: URL
     private var titleIndex: SessionTitleIndex
     private var timer: DispatchSourceTimer?
     private var sessions: [URL: SessionTail] = [:]
     private var nextScan = Date.distantPast
-    private var lastSnapshot: [SessionSnapshot] = []
+    private var focusedWindowTitle: String?
+    private var lastSnapshot = SessionDisplayState(active: [], focused: nil)
 
-    init(report: @escaping @MainActor ([SessionSnapshot]) -> Void) {
+    init(report: @escaping @MainActor (SessionDisplayState) -> Void) {
         self.report = report
         let configuredHome = ProcessInfo.processInfo.environment["CODEX_HOME"].flatMap { $0.isEmpty ? nil : $0 }
         let codexHome = configuredHome.map { URL(fileURLWithPath: $0, isDirectory: true) }
@@ -40,13 +46,23 @@ final class SessionMonitor {
         timer = nil
     }
 
+    func focus(windowTitle: String?) {
+        let title = windowTitle.flatMap(SessionTitleIndex.normalize)
+        queue.async { [weak self] in
+            guard let self, self.focusedWindowTitle != title else { return }
+            self.focusedWindowTitle = title
+            self.titleIndex.refresh()
+            self.publish(self.lastSnapshot.active)
+        }
+    }
+
     private func poll() {
         let now = Date()
         if now >= nextScan {
             discoverSessions(at: now)
-            titleIndex.refresh()
             nextScan = now.addingTimeInterval(2)
         }
+        titleIndex.refresh()
 
         var candidates: [(activity: SessionReading, snapshot: SessionSnapshot)] = []
         for (url, session) in sessions {
@@ -70,7 +86,15 @@ final class SessionMonitor {
             return first.snapshot.id < second.snapshot.id
         }
         var seen = Set<String>()
-        let snapshot = candidates.compactMap { seen.insert($0.snapshot.id).inserted ? $0.snapshot : nil }
+        publish(candidates.compactMap { seen.insert($0.snapshot.id).inserted ? $0.snapshot : nil })
+    }
+
+    private func publish(_ active: [SessionSnapshot]) {
+        let focused = focusedWindowTitle.flatMap { title -> SessionSnapshot? in
+            guard let id = titleIndex.sessionID(matching: title) else { return nil }
+            return active.first { $0.id == id } ?? SessionSnapshot(id: id, title: title, model: nil, reading: nil)
+        }
+        let snapshot = SessionDisplayState(active: active, focused: focused)
         guard snapshot != lastSnapshot else { return }
         lastSnapshot = snapshot
         DispatchQueue.main.async { [report] in report(snapshot) }
@@ -117,6 +141,20 @@ private struct SessionTitleIndex {
         self.url = url
     }
 
+    static func normalize(_ title: String) -> String? {
+        let normalized = title.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        return normalized.isEmpty ? nil : normalized
+    }
+
+    func sessionID(matching title: String) -> String? {
+        var match: String?
+        for (id, name) in titles where name == title {
+            guard match == nil else { return nil }
+            match = id
+        }
+        return match
+    }
+
     mutating func refresh() {
         guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
               attributes[.type] as? FileAttributeType == .typeRegular,
@@ -128,8 +166,7 @@ private struct SessionTitleIndex {
         var updated: [String: String] = [:]
         for line in contents.split(separator: 10) {
             guard let entry = try? decoder.decode(Entry.self, from: line) else { continue }
-            let title = entry.title.split(whereSeparator: \.isWhitespace).joined(separator: " ")
-            updated[entry.id] = title.isEmpty ? nil : title
+            updated[entry.id] = Self.normalize(entry.title)
         }
         titles = updated
         modified = date
